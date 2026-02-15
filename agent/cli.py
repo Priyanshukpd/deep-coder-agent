@@ -1,0 +1,583 @@
+"""
+God Mode Agent — CLI Runner.
+
+Usage:
+    python -m agent "Fix the null pointer in auth module"
+    python -m agent --repo /path/to/repo "Add dark mode"
+    python -m agent --dry-run "Refactor the API layer"
+    python -m agent --self-test
+    python -m agent --scan .
+    python -m agent --interactive
+    python -m agent --version
+"""
+
+from __future__ import annotations
+
+import argparse
+import sys
+import os
+import json
+import logging
+import subprocess
+import shutil
+import time
+from datetime import datetime
+
+VERSION = "7.5.1.1"
+
+# Suppress Together banner
+os.environ.setdefault("TOGETHER_NO_BANNER", "1")
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    datefmt="%H:%M:%S",
+)
+logger = logging.getLogger("agent")
+
+
+# ── Execution Log ────────────────────────────────────────────────
+
+class ExecutionLog:
+    """Saves a JSON log of what the agent did for auditability."""
+
+    def __init__(self, repo_path: str):
+        self._entries: list[dict] = []
+        self._repo_path = os.path.abspath(repo_path)
+        self._start = datetime.now()
+
+    def add(self, step: str, status: str, details: str = ""):
+        self._entries.append({
+            "timestamp": datetime.now().isoformat(),
+            "step": step,
+            "status": status,
+            "details": details,
+        })
+
+    def save(self):
+        """Save log to .agent_log/ in the target repo."""
+        log_dir = os.path.join(self._repo_path, ".agent_log")
+        os.makedirs(log_dir, exist_ok=True)
+        filename = f"run_{self._start.strftime('%Y%m%d_%H%M%S')}.json"
+        filepath = os.path.join(log_dir, filename)
+        data = {
+            "agent_version": VERSION,
+            "repo": self._repo_path,
+            "started": self._start.isoformat(),
+            "finished": datetime.now().isoformat(),
+            "steps": self._entries,
+        }
+        with open(filepath, 'w') as f:
+            json.dump(data, f, indent=2)
+        print(f"  📝 Log saved: {filepath}")
+
+
+# ── Rollback Manager ────────────────────────────────────────────
+
+class RollbackManager:
+    """Backs up files before modification and restores on failure."""
+
+    def __init__(self, repo_path: str):
+        self._repo_path = os.path.abspath(repo_path)
+        self._backups: dict[str, str | None] = {}  # filepath -> original content (None = new file)
+
+    def backup(self, filepath: str):
+        """Backup a file before modifying it."""
+        abs_path = os.path.join(self._repo_path, filepath)
+        if abs_path in self._backups:
+            return  # Already backed up
+        if os.path.exists(abs_path):
+            with open(abs_path, 'r', errors='replace') as f:
+                self._backups[abs_path] = f.read()
+        else:
+            self._backups[abs_path] = None  # New file
+
+    def rollback(self):
+        """Restore all backed-up files to their original state."""
+        restored = 0
+        for path, content in self._backups.items():
+            if content is None:
+                # Was a new file — delete it
+                if os.path.exists(path):
+                    os.remove(path)
+                    restored += 1
+            else:
+                with open(path, 'w') as f:
+                    f.write(content)
+                restored += 1
+        if restored:
+            print(f"  ↩️  Rolled back {restored} files")
+        self._backups.clear()
+
+    @property
+    def has_backups(self) -> bool:
+        return len(self._backups) > 0
+
+
+# ── Git Helper ───────────────────────────────────────────────────
+
+def git_auto_commit(repo_path: str, task: str) -> bool:
+    """Create a branch and commit changes after a successful run."""
+    abs_path = os.path.abspath(repo_path)
+
+    # Check if it's a git repo
+    result = subprocess.run(
+        ["git", "rev-parse", "--is-inside-work-tree"],
+        capture_output=True, text=True, cwd=abs_path,
+    )
+    if result.returncode != 0:
+        print("  ⚠️  Not a git repo — skipping commit")
+        return False
+
+    # Create branch name from task
+    branch_name = "agent/" + task.lower()[:40].replace(" ", "-").replace("/", "-")
+    branch_name = ''.join(c for c in branch_name if c.isalnum() or c in '-_/')
+
+    # Create and switch to branch
+    subprocess.run(["git", "checkout", "-b", branch_name],
+                   capture_output=True, text=True, cwd=abs_path)
+
+    # Stage and commit
+    subprocess.run(["git", "add", "."], capture_output=True, text=True, cwd=abs_path)
+    result = subprocess.run(
+        ["git", "commit", "-m", f"agent: {task}"],
+        capture_output=True, text=True, cwd=abs_path,
+    )
+
+    if result.returncode == 0:
+        print(f"  ✅ Committed to branch: {branch_name}")
+        return True
+    else:
+        print(f"  ⚠️  Nothing to commit")
+        return False
+
+
+# ── Summary Report ───────────────────────────────────────────────
+
+def print_summary(task: str, repo_path: str, start_time: float,
+                  intent: str = "", files_written: int = 0,
+                  llm_calls: int = 0, fix_attempts: int = 0,
+                  success: bool = True):
+    """Print a summary report at the end of a run."""
+    elapsed = time.time() - start_time
+    print("\n" + "─" * 60)
+    print("📊 Run Summary")
+    print("─" * 60)
+    print(f"  Task:         {task}")
+    print(f"  Repo:         {os.path.abspath(repo_path)}")
+    print(f"  Intent:       {intent}")
+    print(f"  Files:        {files_written} written")
+    print(f"  LLM calls:    {llm_calls}")
+    if fix_attempts:
+        print(f"  Fix attempts: {fix_attempts}")
+    print(f"  Duration:     {elapsed:.1f}s")
+    print(f"  Result:       {'✅ Success' if success else '❌ Failed'}")
+    print("─" * 60)
+
+
+# ── Sub-Commands ─────────────────────────────────────────────────
+
+def run_self_test():
+    """Run all governance self-tests."""
+    print("\n🔒 Running Governance Self-Test...\n")
+    from agent.verification.governance_self_test import GovernanceSelfTest, TestResult
+    tester = GovernanceSelfTest()
+    report = tester.run_all()
+
+    for c in report.cases:
+        icon = "✅" if c.result == TestResult.PASS else "❌"
+        print(f"  {icon} {c.name}: {c.details}")
+
+    print(f"\n  Result: {report.passed}/{report.total} passed\n")
+    return report.all_passed
+
+
+def run_scan(directory: str):
+    """Scan a repository and show the RepoMap."""
+    print(f"\n🔍 Scanning {directory}...\n")
+    from agent.planning.repo_discovery import RepoDiscovery
+    discovery = RepoDiscovery(directory)
+    repo_map = discovery.scan()
+
+    print(f"  📁 Files: {repo_map.file_count}")
+    print(f"  📝 Lines: {repo_map.total_lines:,}")
+    print(f"  🏗️  Stack: {repo_map.stack.summary}")
+    print(f"  📊 Scope OK: {'✅' if repo_map.is_within_scope else '❌ Too large!'}")
+
+    if repo_map.stack.languages:
+        print("\n  Languages:")
+        for lang, count in repo_map.stack.languages.items():
+            print(f"    {lang}: {count} files")
+
+    print()
+    return repo_map
+
+
+def run_classify(task: str):
+    """Classify a task using the intent classifier."""
+    from agent.config import AgentConfig
+    from agent.planning.intent import IntentClassifier
+
+    config = AgentConfig()
+
+    provider = None
+    if config.has_api_key:
+        from agent.core.llm_provider import TogetherProvider
+        provider = TogetherProvider(config)
+        mode = "LLM"
+    else:
+        mode = "heuristic"
+
+    classifier = IntentClassifier(provider=provider)
+    result = classifier.classify(task)
+
+    print(f"\n🧠 Intent Classification ({mode})\n")
+    print(f"  Task:       {task}")
+    print(f"  Intent:     {result.intent.value}")
+    print(f"  Confidence: {result.confidence:.0%}")
+    print(f"  Reasoning:  {result.reasoning}")
+    if result.clarification_needed:
+        print(f"  ⚠️  Clarification needed: {result.suggested_question}")
+    print()
+    return result
+
+
+# ── Full Pipeline ────────────────────────────────────────────────
+
+def run_full_pipeline(task: str, repo_path: str = ".", dry_run: bool = False,
+                      yes: bool = False, auto_commit: bool = False,
+                      rollback_on_fail: bool = True):
+    """Run the full agent pipeline for a task."""
+    from agent.config import AgentConfig
+    from agent.planning.intent import IntentClassifier
+    from agent.state import AgentState, validate_transition
+    from agent.mechanisms.risk_budget import RiskBudget
+    from agent.security.preconditions import PreconditionChecker
+
+    config = AgentConfig()
+    exec_log = ExecutionLog(repo_path)
+    rollback_mgr = RollbackManager(repo_path)
+    start_time = time.time()
+    intent_str = ""
+    files_written = 0
+    llm_calls = 0
+    pipeline_success = True
+
+    # ── Header ──
+    print("\n" + "=" * 60)
+    print(f"🚀 GOD MODE AGENT v{VERSION}")
+    print("=" * 60)
+
+    print(f"\n📋 Task: {task}")
+    print(f"📂 Repo: {os.path.abspath(repo_path)}")
+    if dry_run:
+        print(f"🔍 Mode: DRY RUN (plan only, no writes)")
+    print()
+
+    # ── Step 1: Governance Self-Test ──
+    print("─── Step 1: Governance Self-Test ───")
+    passed = run_self_test()
+    exec_log.add("governance_self_test", "pass" if passed else "fail")
+    if not passed:
+        print("❌ Governance checks failed. Aborting.")
+        exec_log.save()
+        return False
+
+    # ── Step 2: Intent Analysis ──
+    print("─── Step 2: Intent Analysis ───")
+    intent_result = run_classify(task)
+    intent_str = intent_result.intent.value
+    exec_log.add("intent_analysis", intent_str,
+                 f"confidence={intent_result.confidence:.0%}")
+
+    # Check if clarification needed
+    if intent_result.clarification_needed:
+        print(f"  ⚠️  Low confidence ({intent_result.confidence:.0%}). "
+              f"Consider rephrasing your task.")
+        if not yes:
+            try:
+                answer = input("   Continue anyway? [Y/n] ").strip().lower()
+                if answer and answer not in ('y', 'yes'):
+                    print("   Aborted.")
+                    return False
+            except (EOFError, KeyboardInterrupt):
+                return False
+
+    # ── Step 3: Precondition Checks ──
+    print("─── Step 3: Precondition Checks ───")
+    head = PreconditionChecker.get_git_head(repo_path)
+    git_ok = head != "unknown_or_no_git"
+    print(f"  Git consistency: {'✅' if git_ok else '⚠️  Not a git repo'}")
+    exec_log.add("preconditions", "pass" if git_ok else "warn",
+                 f"git_head={head[:7] if git_ok else 'none'}")
+
+    # ── Step 4: Repo Discovery ──
+    print("─── Step 4: Repo Discovery ───")
+    repo_map = run_scan(repo_path)
+    exec_log.add("repo_discovery", "pass",
+                 f"files={repo_map.file_count}, lines={repo_map.total_lines}")
+
+    # ── Step 5: Risk Budget ──
+    print("─── Step 5: Risk Budget ───")
+    budget = RiskBudget()
+    budget.start()
+    print(f"  Exhausted: {budget.is_exhausted}")
+    print(f"  Violations: {len(budget.violations)}")
+    exec_log.add("risk_budget", "ok", f"exhausted={budget.is_exhausted}")
+
+    # ── Step 6: Execute Task ──
+    if not config.has_api_key:
+        print("\n⚠️  No API key — skipping code generation")
+        exec_log.add("execution", "skipped", "no API key")
+        exec_log.save()
+        return True
+
+    from agent.core.llm_provider import TogetherProvider
+    from agent.core.task_executor import TaskExecutor
+
+    print("─── Step 6: Task Execution ───")
+    provider = TogetherProvider(config)
+    executor = TaskExecutor(provider, repo_path)
+
+    if dry_run:
+        plan = executor.generate_plan(task)
+        print(f"\n📋 Plan: {plan.summary}")
+        if plan.dependencies:
+            print(f"📦 Dependencies: {', '.join(plan.dependencies)}")
+        print(f"📂 Files ({len(plan.files)}):")
+        for f in plan.files:
+            print(f"   [{f.action.upper()}] {f.path} — {f.description}")
+        if plan.run_command:
+            print(f"🏃 Run: {plan.run_command}")
+        if plan.test_command:
+            print(f"🧪 Test: {plan.test_command}")
+        print("\n🔍 Dry run complete — no files written.")
+        llm_calls = provider.call_count
+        exec_log.add("execution", "dry_run", f"{len(plan.files)} files planned")
+    else:
+        # User confirmation
+        if not yes:
+            print("\n⚠️  The agent will generate and write code to your repo.")
+            try:
+                answer = input("   Proceed? [Y/n] ").strip().lower()
+                if answer and answer not in ('y', 'yes'):
+                    print("   Aborted by user.")
+                    exec_log.add("execution", "aborted", "user declined")
+                    exec_log.save()
+                    return False
+            except (EOFError, KeyboardInterrupt):
+                print("\n   Aborted.")
+                return False
+
+        # Backup files for rollback
+        executor.set_rollback_manager(rollback_mgr)
+
+        plan = executor.execute(task)
+        files_written = len(plan.files)
+        llm_calls = provider.call_count
+
+        # Check if execution succeeded
+        pipeline_success = executor.last_run_success
+        exec_log.add("execution",
+                      "complete" if pipeline_success else "failed",
+                      f"files={[f.path for f in plan.files]}, "
+                      f"fix_attempts={executor.fix_attempts_used}")
+
+        # Rollback on failure
+        if not pipeline_success and rollback_on_fail and rollback_mgr.has_backups:
+            print("\n↩️  Rolling back changes due to failure...")
+            rollback_mgr.rollback()
+            exec_log.add("rollback", "executed")
+
+        # Git commit on success
+        if pipeline_success and auto_commit:
+            print("\n─── Git Commit ───")
+            git_auto_commit(repo_path, task)
+            exec_log.add("git_commit", "done")
+
+    # ── Summary ──
+    print_summary(
+        task=task, repo_path=repo_path, start_time=start_time,
+        intent=intent_str, files_written=files_written,
+        llm_calls=llm_calls,
+        fix_attempts=getattr(executor, 'fix_attempts_used', 0) if 'executor' in dir() else 0,
+        success=pipeline_success,
+    )
+
+    print("=" * 60)
+    print(f"{'✅' if pipeline_success else '❌'} Pipeline "
+          f"{'complete' if pipeline_success else 'failed'}")
+    print("=" * 60)
+
+    exec_log.save()
+    return pipeline_success
+
+
+# ── Chat Mode (Persistent) ──────────────────────────────────────
+
+def run_chat(repo_path: str = "."):
+    """Persistent chat mode with conversation memory."""
+    from agent.config import AgentConfig
+    config = AgentConfig()
+
+    if not config.has_api_key:
+        print("\n⚠️  No API key configured. Set TOGETHER_API_KEY to use chat mode.")
+        return
+
+    from agent.core.llm_provider import TogetherProvider
+    from agent.core.chat import ChatSession
+
+    provider = TogetherProvider(config)
+    session = ChatSession(provider, repo_path)
+    session.loop()
+
+
+def run_interactive_legacy(repo_path: str = "."):
+    """Legacy interactive REPL mode (stateless)."""
+    print(f"\n🎮 God Mode Agent v{VERSION} — Interactive Mode (Legacy)")
+    print(f"    Repo: {os.path.abspath(repo_path)}")
+    print("    Commands: 'self-test', 'scan', 'dry-run <task>', 'classify <task>', 'quit'")
+    print("    Or type any task to execute it\n")
+
+    while True:
+        try:
+            user_input = input("agent> ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print("\nBye! 👋")
+            break
+
+        if not user_input:
+            continue
+        elif user_input.lower() in ("quit", "exit", "q"):
+            print("Bye! 👋")
+            break
+        elif user_input.lower() == "self-test":
+            run_self_test()
+        elif user_input.lower().startswith("scan"):
+            parts = user_input.split(maxsplit=1)
+            run_scan(parts[1] if len(parts) > 1 else repo_path)
+        elif user_input.lower().startswith("dry-run "):
+            task = user_input[8:].strip()
+            if task:
+                run_full_pipeline(task, repo_path=repo_path, dry_run=True, yes=True)
+        elif user_input.lower().startswith("classify "):
+            task = user_input[9:].strip()
+            if task:
+                run_classify(task)
+        else:
+            run_full_pipeline(user_input, repo_path=repo_path, yes=True)
+
+
+def run_web_ui(repo_path: str = "."):
+    """Launch the Streamlit Web UI."""
+    import sys
+    import subprocess
+    
+    # Path to the web_ui.py module
+    web_ui_path = os.path.join(os.path.dirname(__file__), "web_ui.py")
+    
+    cmd = [
+        sys.executable, "-m", "streamlit", "run",
+        web_ui_path,
+        "--",
+        "--repo", repo_path
+    ]
+    
+    print(f"🚀 Launching Web UI for repo: {os.path.abspath(repo_path)}")
+    print(f"   Command: {' '.join(cmd)}")
+    
+    try:
+        subprocess.run(cmd, check=True)
+    except KeyboardInterrupt:
+        print("\n👋 Web UI stopped.")
+
+
+# ── Entry Point ──────────────────────────────────────────────────
+
+def main():
+    parser = argparse.ArgumentParser(
+        prog="agent",
+        description=f"God Mode Agent v{VERSION} — Deterministic Dev Agent",
+    )
+    parser.add_argument(
+        "task", nargs="?", default=None,
+        help="Task to execute, e.g. 'Fix the bug in auth module'",
+    )
+    parser.add_argument(
+        "--repo", metavar="PATH", default=".",
+        help="Path to the target repository (default: current directory)",
+    )
+    parser.add_argument(
+        "--dry-run", action="store_true",
+        help="Show the plan without writing any files",
+    )
+    parser.add_argument(
+        "--yes", "-y", action="store_true",
+        help="Skip confirmation prompt",
+    )
+    parser.add_argument(
+        "--commit", action="store_true",
+        help="Auto-commit changes to a new git branch after success",
+    )
+    parser.add_argument(
+        "--no-rollback", action="store_true",
+        help="Don't rollback changes if execution fails",
+    )
+    parser.add_argument(
+        "--self-test", action="store_true",
+        help="Run governance self-tests",
+    )
+    parser.add_argument(
+        "--scan", metavar="DIR",
+        help="Scan a directory and show RepoMap",
+    )
+    parser.add_argument(
+        "--classify", metavar="TASK",
+        help="Classify a task intent without running the full pipeline",
+    )
+    parser.add_argument(
+        "--interactive", "-i", action="store_true",
+        help="Start persistent chat mode (like Copilot / Windsurf)",
+    )
+    parser.add_argument(
+        "--ui", action="store_true",
+        help="Launch Streamlit Web UI",
+    )
+    parser.add_argument(
+        "--legacy-repl", action="store_true",
+        help="Start legacy stateless REPL mode",
+    )
+    parser.add_argument(
+        "--version", "-v", action="version",
+        version=f"God Mode Agent v{VERSION}",
+    )
+
+    args = parser.parse_args()
+
+    if args.self_test:
+        success = run_self_test()
+        sys.exit(0 if success else 1)
+    elif args.scan:
+        run_scan(args.scan)
+    elif args.classify:
+        run_classify(args.classify)
+    elif args.interactive:
+        run_chat(repo_path=args.repo)
+    elif args.ui:
+        run_web_ui(repo_path=args.repo)
+    elif args.legacy_repl:
+        run_interactive_legacy(repo_path=args.repo)
+    elif args.task:
+        success = run_full_pipeline(
+            args.task, repo_path=args.repo,
+            dry_run=args.dry_run, yes=args.yes,
+            auto_commit=args.commit,
+            rollback_on_fail=not args.no_rollback,
+        )
+        sys.exit(0 if success else 1)
+
+
+
+if __name__ == "__main__":
+    main()
+

@@ -1,0 +1,5 @@
+{"timestamp": 1771068328.1169212, "event_type": "STATE_TRANSITION", "details": {"from": "IDLE", "to": "INTENT_ANALYSIS", "reason": "Starting Task", "metadata": {}}, "agent_id": "god-mode-v1", "session_id": "drift_sim"}
+{"timestamp": 1771068328.1171598, "event_type": "INTENT_CLASSIFIED", "details": {"intent": "fix", "confidence": 0.9, "reasoning": "Fixing a bug"}, "agent_id": "god-mode-v1", "session_id": "drift_sim"}
+{"timestamp": 1771068328.1172411, "event_type": "STATE_TRANSITION", "details": {"from": "INTENT_ANALYSIS", "to": "REPO_DISCOVERY", "reason": "Analyzing repo", "metadata": {}}, "agent_id": "god-mode-v1", "session_id": "drift_sim"}
+{"timestamp": 1771068328.117592, "event_type": "STATE_TRANSITION", "details": {"from": "REPO_DISCOVERY", "to": "PLANNING", "reason": "Planning fix", "metadata": {}}, "agent_id": "god-mode-v1", "session_id": "drift_sim"}
+{"timestamp": 1771068328.129291, "event_type": "FAIL_SAFE", "details": {"reason": "Drift Detected: File /Users/munishm/Documents/god-mode-agent/drift_test_file.txt was modified externally."}, "agent_id": "god-mode-v1", "session_id": "drift_sim"}

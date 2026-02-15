@@ -1,0 +1,69 @@
+# Task: Build Production-Ready Dev Agent
+
+- [x] **Analyze Requirements & Feasibility**
+    - [x] Analyze "Phi-3.5" capabilities
+    - [x] Analyze "Query Builder" vs "AI Agent" approach
+    - [x] Analyze "Column Enrichment" techniques
+    - [x] Analyze "Schema RAG" for large databases
+    - [x] Analyze "Cryptic Schema" handling
+    - [x] Feasibility Analysis
+- [x] **Architecture Design**
+    - [x] Define Tech Stack (Python/FastAPI + Next.js)
+    - [x] Create Development Roadmap
+    - [x] Synthesize from Windsurf/Devin/Cursor/Replit/Lovable
+    - [x] Upgrade to v4.0 (Intent Classifier, State Machine, Safety)
+- [x] **Phase 1: Control & Safety (The Foundation)**
+    - [x] Initialize Python Project
+    - [x] Implement [AgentState](file:///Users/munishm/Documents/god-mode-agent/agent/state.py#16-31) enum + transition rules
+    - [x] Implement [RiskBudget](file:///Users/munishm/Documents/god-mode-agent/agent/risk_budget.py#40-221) (multi-dimensional)
+    - [x] Implement `CommandClassifier` + safety policy
+    - [x] Define Human Approval Contract ([ApprovalRequest](file:///Users/munishm/Documents/god-mode-agent/agent/approval.py#50-120) artifact)
+    - [x] Implement Decision Logger (Structured JSON Audit Trail)
+    - [x] **[NEW] Implement RBAC System (Roles & Permissions)**
+    - [x] Build [StateMachineController](file:///Users/munishm/Documents/god-mode-agent/agent/controller.py#20-208)
+    - [x] Simulate 3 fake tasks (Dry Run)
+    - [x] **[NEW] Implement Intent Confidence & Ambiguity Fallback**
+    - [x] **[NEW] Implement Precondition Checks (Git HEAD / Checksums)**
+    - [ ] **[NEW] Implement Governance Self-Test Module**
+
+- [ ] **Phase 2: Execution Hardening (The Hands)**
+    - [ ] **[NEW] Implement Task Isolation (Atomic Branching + Clean Tree Invariant)**
+    - [ ] **[NEW] Implement Optimistic Merge Guard (CI SHA == Branch HEAD + Status + Freshness)**
+    - [ ] **[NEW] Implement Plan Envelope Validator (Inputs + Toolchain + Dep Freeze + Configurable Scope)**
+    - [ ] **[NEW] Implement Atomic State Transitions (Invariant Guard + Operational Rollback)**
+    - [ ] **[NEW] Implement Kill Switch Cascade (INTERRUPT / TIMEOUT States)**
+    - [ ] **[NEW] Implement Network Policy (OS-Level Block + Lockfile Hash)**
+    - [ ] **[NEW] Define Rollback Domains (Atomic only: git reset --hard)**
+    - [ ] **[NEW] Implement CI Gate Integration**
+
+- [ ] **Phase 3: Cognitive Hardening (The Mind)**
+    - [ ] **[NEW] Implement TDD Gate (Red/Green Integrity Check)**
+    - [ ] **[NEW] Implement Anti-Mocking Validator (No Tautologies)**
+    - [ ] **[NEW] Implement Bounded LSP Loop (Syntax Retry Only)**
+    - [ ] **[NEW] Implement Replay Log (Tool Hash + Sampling Hash + Manifest)**
+    - [ ] **[NEW] Implement Non-Determinism Budget (Temp=0 Enforcement)**
+    - [ ] **[NEW] Implement Ultra-Strict Express Lane (Diff Guard: No Executable/Shebang)**
+    - [ ] **[NEW] Implement Supply Chain Security (Typosquatting Check)**
+    - [ ] **[NEW] Implement Graph-Based Context Retrieval**
+
+- [ ] **Phase 4: Execution & Diffs (The Work)**
+    - [ ] Implement sandboxed `run_command`
+    - [ ] Implement diff-first editing (patch → apply → rollback)
+    - [ ] **[NEW] Implement Secrets Policy (Redaction & Injection)**
+    - [ ] Shell session persistence
+
+- [ ] **Phase 5: Planning & Discipline (The Manager)**
+    - [ ] Implement [IntentClassifier](file:///Users/munishm/Documents/god-mode-agent/agent/intent.py#18-85) (LLM-powered)
+    - [ ] Enforce [task.md](file:///Users/munishm/.gemini/antigravity/brain/15f5ea29-52e1-4bf1-9a57-b5b7394b5d88/task.md) + [implementation_plan.md](file:///Users/munishm/.gemini/antigravity/brain/15f5ea29-52e1-4bf1-9a57-b5b7394b5d88/implementation_plan.md)
+    - [ ] Implement `ImpactAnalysis` (dependency graph)
+    - [ ] Implement `RepoDiscovery` (detect stack)
+
+- [ ] **Phase 6: Verification & Feedback (The Tester)**
+    - [ ] Hierarchical verification pipeline
+    - [ ] Test-generation-first workflow
+    - [ ] Human feedback loop
+
+- [ ] **Phase 7: Deep Intelligence (The Brain)**
+    - [ ] Background ChromaDB indexing
+    - [ ] `ripgrep` wrapper (Tier 1) + `semantic_search` (Tier 2)
+    - [ ] External Docs RAG

@@ -1,0 +1,145 @@
+# God Mode Agent — Full Architecture Walkthrough
+
+## Summary
+
+Implemented all 7 phases of the God Mode Agent v7.5.1.1 architecture, creating **37 Python modules** with **40 files** total in the `agent/` directory.
+
+## Verification Results
+
+| Check | Result |
+|-------|--------|
+| Module imports | **37/37 pass** ✅ |
+| Unit tests | **27/27 pass** ✅ |
+| Dependency graph | 28 nodes, 168 edges auto-detected |
+| Supply chain detection | Correctly flags `reqeusts` as typosquat of `requests` |
+| Express lane | Correctly gates docs-only vs code changes |
+
+## Architecture Map
+
+```mermaid
+graph TD
+    subgraph P1["Phase 1 - Core Control"]
+        state["state.py"] --> controller["controller.py"]
+        risk["risk_budget.py"] --> controller
+        cmd["command_safety.py"] --> controller
+        rbac["rbac.py"] --> controller
+        intent["intent.py"] --> controller
+        pre["preconditions.py"] --> controller
+        gov["governance_self_test.py"]
+        config["config.py"] --> llm["llm_provider.py"]
+        llm --> intent
+    end
+
+    subgraph P2["Phase 2 - Execution Hardening"]
+        iso["task_isolation.py"]
+        env["plan_envelope.py"]
+        kill["kill_switch.py"]
+        net["network_policy.py"]
+        merge["merge_guard.py"]
+        roll["rollback.py"]
+        ci["ci_gate.py"]
+    end
+
+    subgraph P3["Phase 3 - Cognitive Hardening"]
+        tdd["tdd_gate.py"]
+        anti["anti_mocking.py"]
+        lsp["lsp_loop.py"]
+        replay["replay_log.py"]
+        nondet["nondeterminism_budget.py"]
+        express["express_lane.py"]
+        supply["supply_chain.py"]
+        ctxgraph["context_graph.py"]
+    end
+
+    subgraph P4["Phase 4 - Execution"]
+        sandbox["sandbox.py"] --> cmd
+        sandbox --> net
+        diff["diff_editor.py"]
+        secrets["secrets_policy.py"]
+        shell["shell_session.py"]
+    end
+
+    subgraph P5["Phase 5 - Planning"]
+        plan["plan_enforcer.py"]
+        impact["impact_analysis.py"] --> ctxgraph
+        repo["repo_discovery.py"]
+    end
+
+    subgraph P6["Phase 6 - Verification"]
+        verify["verification_pipeline.py"]
+        testgen["test_generator.py"]
+        feedback["feedback_loop.py"] --> state
+    end
+
+    subgraph P7["Phase 7 - Deep Intelligence"]
+        search["code_search.py"]
+        docs["docs_rag.py"]
+    end
+```
+
+## Modules by Phase
+
+### Phase 1: Core Control (10 modules)
+| Module | Purpose |
+|--------|---------|
+| [state.py](file:///Users/munishm/Documents/god-mode-agent/agent/state.py) | 12-state machine with granular FAILED_BY_* terminals |
+| [controller.py](file:///Users/munishm/Documents/god-mode-agent/agent/controller.py) | Main orchestrator with LLM integration |
+| [config.py](file:///Users/munishm/Documents/god-mode-agent/agent/config.py) | Centralized config with sampling_policy_hash |
+| [llm_provider.py](file:///Users/munishm/Documents/god-mode-agent/agent/llm_provider.py) | Together AI provider with tool calling |
+| [intent.py](file:///Users/munishm/Documents/god-mode-agent/agent/intent.py) | LLM-powered intent classifier with heuristic fallback |
+| [risk_budget.py](file:///Users/munishm/Documents/god-mode-agent/agent/risk_budget.py) | Risk budget with 3-strike exhaustion |
+| [command_safety.py](file:///Users/munishm/Documents/god-mode-agent/agent/command_safety.py) | 3-tier command classification |
+| [rbac.py](file:///Users/munishm/Documents/god-mode-agent/agent/rbac.py) | Role-based access control |
+| [preconditions.py](file:///Users/munishm/Documents/god-mode-agent/agent/preconditions.py) | Git consistency + file checksums |
+| [governance_self_test.py](file:///Users/munishm/Documents/god-mode-agent/agent/governance_self_test.py) | 14/14 governance validations |
+
+### Phase 2: Execution Hardening (7 modules)
+| Module | Purpose |
+|--------|---------|
+| [task_isolation.py](file:///Users/munishm/Documents/god-mode-agent/agent/task_isolation.py) | Atomic branching + clean tree assertion |
+| [plan_envelope.py](file:///Users/munishm/Documents/god-mode-agent/agent/plan_envelope.py) | Input snapshot hashing + scope enforcement |
+| [kill_switch.py](file:///Users/munishm/Documents/god-mode-agent/agent/kill_switch.py) | SIGINT/SIGTERM + 15m timeout + stale branch |
+| [network_policy.py](file:///Users/munishm/Documents/god-mode-agent/agent/network_policy.py) | Block network commands during IMPLEMENTING |
+| [merge_guard.py](file:///Users/munishm/Documents/god-mode-agent/agent/merge_guard.py) | 4 CI binding guards §2.E |
+| [rollback.py](file:///Users/munishm/Documents/god-mode-agent/agent/rollback.py) | 3-domain atomic git reset |
+| [ci_gate.py](file:///Users/munishm/Documents/god-mode-agent/agent/ci_gate.py) | Abstract + mock CI integration |
+
+### Phase 3: Cognitive Hardening (8 modules)
+| Module | Purpose |
+|--------|---------|
+| [tdd_gate.py](file:///Users/munishm/Documents/god-mode-agent/agent/tdd_gate.py) | Red/Green integrity with content hashing |
+| [anti_mocking.py](file:///Users/munishm/Documents/god-mode-agent/agent/anti_mocking.py) | Detects tautological tests |
+| [lsp_loop.py](file:///Users/munishm/Documents/god-mode-agent/agent/lsp_loop.py) | 3-retry cap, logic fail = STOP |
+| [replay_log.py](file:///Users/munishm/Documents/god-mode-agent/agent/replay_log.py) | Forensic tool hash + session verification |
+| [nondeterminism_budget.py](file:///Users/munishm/Documents/god-mode-agent/agent/nondeterminism_budget.py) | temp=0 enforcement + prompt mutation detection |
+| [express_lane.py](file:///Users/munishm/Documents/god-mode-agent/agent/express_lane.py) | Docs-only fast path, blocks shebang/chmod |
+| [supply_chain.py](file:///Users/munishm/Documents/god-mode-agent/agent/supply_chain.py) | Levenshtein-based typosquat detection |
+| [context_graph.py](file:///Users/munishm/Documents/god-mode-agent/agent/context_graph.py) | AST import graph + transitive closure |
+
+### Phase 4: Execution & Diffs (4 modules)
+| Module | Purpose |
+|--------|---------|
+| [sandbox.py](file:///Users/munishm/Documents/god-mode-agent/agent/sandbox.py) | Safety-gated command runner |
+| [diff_editor.py](file:///Users/munishm/Documents/god-mode-agent/agent/diff_editor.py) | Atomic patch sets with drift detection |
+| [secrets_policy.py](file:///Users/munishm/Documents/god-mode-agent/agent/secrets_policy.py) | Regex secret detection + redaction |
+| [shell_session.py](file:///Users/munishm/Documents/god-mode-agent/agent/shell_session.py) | Persistent shell with session manager |
+
+### Phase 5: Planning & Discipline (3 modules)
+| Module | Purpose |
+|--------|---------|
+| [plan_enforcer.py](file:///Users/munishm/Documents/god-mode-agent/agent/plan_enforcer.py) | task.md/plan.md existence enforcement |
+| [impact_analysis.py](file:///Users/munishm/Documents/god-mode-agent/agent/impact_analysis.py) | LOW/MEDIUM/HIGH/CRITICAL risk classification |
+| [repo_discovery.py](file:///Users/munishm/Documents/god-mode-agent/agent/repo_discovery.py) | Stack detection + RepoMap builder |
+
+### Phase 6: Verification & Feedback (3 modules)
+| Module | Purpose |
+|--------|---------|
+| [verification_pipeline.py](file:///Users/munishm/Documents/god-mode-agent/agent/verification_pipeline.py) | 5-tier gated pipeline |
+| [test_generator.py](file:///Users/munishm/Documents/god-mode-agent/agent/test_generator.py) | TDD scaffold generation |
+| [feedback_loop.py](file:///Users/munishm/Documents/god-mode-agent/agent/feedback_loop.py) | 24h timeout + state routing |
+
+### Phase 7: Deep Intelligence (2 modules)
+| Module | Purpose |
+|--------|---------|
+| [code_search.py](file:///Users/munishm/Documents/god-mode-agent/agent/code_search.py) | ripgrep + ChromaDB semantic search |
+| [docs_rag.py](file:///Users/munishm/Documents/god-mode-agent/agent/docs_rag.py) | External docs RAG with chunking |

@@ -1,0 +1,113 @@
+# The "God Mode" Agent — Architecture v7.5.1.1 (Final Kernel - Sealed)
+
+**Philosophy:** "Boring is Reliable. Optimistic is Scalable. Precision is Mandatory."
+**Status:** **Build Target (Final)**
+
+---
+
+## 1. The "Precision" State Machine
+
+### The Invariants Table (v7.5.1.1)
+
+| State | **Entry Invariant** | **Exit Invariant** | **Hard Constraints** |
+| --- | --- | --- | --- |
+| **INTENT_ANALYSIS** | User Input exists. | `Intent` classified. | **Read-Only**. **Express Lane Guard:** No shebang/chmod changes. |
+| **REPO_DISCOVERY** | Intent is Valid. | `RepoMap` built. | **Read-Only**. file_count > `MAX_FILE_CAP` (Def: 50) -> **FAIL(ScopeTooLarge)**. |
+| **PLANNING** | `RepoMap` exists. | `PlanEnvelope` Signed & Frozen. | **Input Snapshot Hashed**. **Freeze Plan BEFORE Branch**. |
+| **PROVING_GROUND** | `PlanEnvelope` exists. Intent != `REFACTOR`. | **TEST FAILED (AssertionError)**. | **Strict TDD Binding**. Must import SUT. |
+| **IMPLEMENTING** | `TestFile` exists. | **Linter PASS**. | **Retries:** 3 (Syntax/Lint only). Logic fail = STOP. **No Network**. **No Dep Install**. |
+| **VERIFYING** | Linter Passed. | **TEST PASSED**. CI Green. | **Drift Check:** `branch_base_sha` == `origin/main`. **TDD Check:** Test Code Unmodified. **Dep Check.** |
+| **FEEDBACK_WAIT** | CI Green. | `APPROVAL_SIGNATURE` exists. | **Timeout:** 24h. |
+| **COMPLETE** | Approval Signed. | Merge Commit recorded. | **Optimistic Merge:** `ci_sha` == `branch_head` AND `status` == SUCCESS (Latest Run). |
+| **FAILED_BY_STALE**| `main` moved during task. | Terminal State. | **No Retry**. New invocation required. |
+| **FAILED_BY_INTERRUPT**| `SIGINT` / User Stop. | Terminal State. | **Audit Distinct**. Stops auto-retry. |
+| **FAILED_BY_TIMEOUT**| Runtime > 15m. | Terminal State. | **Hard Stop**. SIGTERM -> Log -> Exit. |
+| **FAILED_BY_SCOPE**| `RepoMap` > `MAX_FILE_CAP`. | Terminal State. | **Hard Stop**. Require narrower prompt. |
+
+---
+
+## 2. Key Mechanisms (Kernel Hardened)
+
+### A. Kernel-Level Guard (Invariant Re-Validation)
+**Global Transition Logic**
+1.  **Atomic Check:** Before any transition `Current -> Next`:
+    ```python
+    if not (check_invariant(Current.Exit) and check_invariant(Next.Entry)):
+        abort_transition() # Race condition protection
+    ```
+
+### B. Immutable Inputs Snapshot (Forensic Integrity)
+**Location:** `PLANNING` start
+1.  **Hash:** `input_snapshot_hash = sha256(user_input + repo_map + base_tree_hash + toolchain_manifest_hash)`.
+2.  **Toolchain Manifest:** Logs versions of Python, Node, Linter, CI Image.
+3.  **Verify:** Replay runs must match this hash exactly.
+
+### C. Non-Determinism Budget
+**Global Constraint**
+1.  **Policy:** `temperature=0`, `top_p` fixed.
+2.  **Audit:** Log `sampling_policy_hash`.
+3.  **Enforcement:** System prompt mutation mid-run is FORBIDDEN.
+
+### D. Atomic State Transitions & Operational Rollback
+**Global Invariant**
+1.  **Atomicity:** Tool failure -> State Rollback. No partial transitions.
+2.  **Operational Rollback Protocol:**
+    - **Before Branch Creation:** No action (Filesystem clean).
+    - **After Branch Creation / During IMPLEMENTING:** `git reset --hard HEAD` (Reset to last clean commit inside task branch).
+    - **Locks:** Force release all Redis locks.
+
+### E. Merge Security (CI Binding)
+**Location:** `VERIFYING` -> `COMPLETE`
+1.  **Optimistic Guard:** `origin/main` SHA must match `branch_base_sha`.
+2.  **CI Guard:** `ci_validated_sha` must match `branch_head_sha`.
+3.  **Status Guard:** CI Status must be `SUCCESS`.
+4.  **Freshness:** CI run must be the **LATEST** execution for that SHA. Stale/Cached green runs from previous pushes are invalid if re-run.
+
+### F. Plan Envelope Validator (Scope Security)
+**Location:** `PLANNING` & `IMPLEMENTING`
+1.  **Precondition: Clean Working Tree:**
+    - `git status --porcelain` must be empty.
+    - Excludes ignored/untracked files (unless `.gitignore` itself is modified).
+    - If dirty -> ABORT immediately.
+2.  **Ordering:** `RepoMap` -> `Plan` -> `Hash` -> **THEN** `Task Isolation`.
+3.  **Immutability:** `plan_envelope_hash` is immutable.
+4.  **Scope Enforcement:**
+    - Reject created/deleted files outside plan.
+    - **Dependency Freeze:**
+        - Compute `lockfile_hash` at `PLANNING`.
+        - Re-compute at `VERIFYING`.
+        - If mismatch -> FAIL.
+    - **No Implicit Install:** Block `pip install`, `npm install`.
+5.  **Policy Constants:**
+    - `MAX_FILE_CAP`: Default 50 (Configurable).
+
+---
+
+## 3. Top-Level Flow (v7.5.1.1)
+
+```
+USER_INPUT
+   ↓
+INTENT_ANALYSIS ──> [STRICT DOCS CHECK] ──> (Docs? IMPLEMENTING)
+   ↓
+REPO_DISCOVERY ──> [CAPTURE BASE SHA]
+   ↓
+   [ASSERT FILE COUNT <= MAX_FILE_CAP] (Else: FAILED_BY_SCOPE)
+   ↓
+PLANNING ──> [HASH INPUTS + TOOLCHAIN] ──> [FREEZE PLAN ENVELOPE]
+   ↓
+   [ASSERT CLEAN TREE]
+   ↓
+TASK_ISOLATION ──> [git checkout -b agent/task-id]
+   ↓
+PROVING_GROUND ──> [WRITE TEST] ──> [ASSERT RED]
+   ↓
+IMPLEMENTING ──> [WRITE CODE] ──> [OS NETWORK BLOCK] ──> [LINT]
+                 [ASSERT NO DEP CHANGES]
+   ↓
+VERIFYING ──> [RUN TEST (GREEN)] ──> [VERIFY TEST INTEGRITY]
+   ↓
+   [CHECK BASE SHA] ──> [CHECK CI SHA + STATUS (LATEST)] ──> [CHECK LOCKFILE HASH]
+   ↓
+FEEDBACK_WAIT ──> [HUMAN APPROVAL] ──> [MERGE]
+```

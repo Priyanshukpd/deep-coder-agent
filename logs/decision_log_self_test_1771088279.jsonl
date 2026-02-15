@@ -1,0 +1,1 @@
+{"timestamp": 1771088279.491713, "event_type": "FAIL_SAFE", "details": {"reason": "Illegal transition attempted: Illegal transition: IDLE \u2192 COMPLETE. Allowed: ['INTENT_ANALYSIS']"}, "agent_id": "god-mode-v1", "session_id": "self_test"}
