@@ -707,42 +707,45 @@ class TaskExecutor:
                              plan: ExecutionPlan) -> Optional[FileAction]:
         """Parse error output to find which planned file caused the error.
 
-        Handles tracebacks/stack traces from multiple languages:
-        - Python: File "xxx.py", line N
-        - Java:   at com.example.Main.main(Main.java:5)
-        - Node:   at Object.<anonymous> (/path/file.js:10:3)
-        - Go:     main.go:15:2: undefined
-        - Rust:   --> src/main.rs:5:10
+        Uses known patterns as fast-path, then a universal catch-all that
+        matches ANY 'file.ext:lineN' format — works for every language.
         """
-        # Multi-language file extraction patterns
         import re as _re
 
-        patterns = [
+        # ── Known patterns (fast-path for common formats) ──
+        known_patterns = [
             # Python: File "path/to/file.py", line N
             _re.compile(r'File "([^"]+)"'),
-            # Java: at package.Class.method(File.java:N)
-            _re.compile(r'\(([\w./]+\.java):\d+\)'),
-            # Kotlin: at package.Class.method(File.kt:N)
-            _re.compile(r'\(([\w./]+\.kt):\d+\)'),
-            # Node.js: at Something (/path/to/file.js:N:N) or (file.ts:N:N)
+            # Java/Kotlin: at package.Class.method(File.java:N)
+            _re.compile(r'\(([\w./]+\.(?:java|kt|scala)):\d+\)'),
+            # Node/TS: at Something (/path/to/file.js:N:N)
             _re.compile(r'\(([^)]+\.[jt]sx?):\d+:\d+\)'),
-            # Node.js: at /path/to/file.js:N:N (no parens)
+            # Node/TS: at /path/to/file.js:N:N (no parens)
             _re.compile(r'at\s+(/[^\s]+\.[jt]sx?):\d+'),
-            # Go: file.go:N:N: error
-            _re.compile(r'([\w./]+\.go):\d+'),
             # Rust: --> src/main.rs:N:N
             _re.compile(r'-->\s*([\w./]+\.rs):\d+'),
-            # C/C++: file.c:N:N: error
-            _re.compile(r'([\w./]+\.[ch](?:pp)?):\d+:\d+'),
             # Dart/Flutter: package:app/file.dart:N:N
             _re.compile(r'([\w./]+\.dart):\d+'),
         ]
 
-        # Collect all referenced files from all patterns
+        # ── Universal catch-all: any_path/file.ext:N or file.ext:N:N ──
+        # Catches Go, C, C++, Ruby, PHP, Swift, Elixir, Zig, Nim, Haskell,
+        # and any other language that reports errors as file:line
+        universal_pattern = _re.compile(
+            r'([\w./-]+\.\w{1,10}):\d+'
+        )
+
+        # Collect all referenced files — known patterns first, then universal
         referenced_files = []
-        for pattern in patterns:
+        for pattern in known_patterns:
             matches = pattern.findall(error_text)
             referenced_files.extend(matches)
+
+        # Universal pass picks up anything the known patterns missed
+        universal_matches = universal_pattern.findall(error_text)
+        for m in universal_matches:
+            if m not in referenced_files:
+                referenced_files.append(m)
 
         # Match referenced files to planned files (last match = most relevant)
         for ref_file in reversed(referenced_files):
@@ -753,20 +756,15 @@ class TaskExecutor:
                 if fa.path == ref_basename or os.path.basename(fa.path) == ref_basename:
                     return fa
 
-        # Fallback: check if any planned file is mentioned in error text
+        # Fallback: check if any planned file path appears in the error text
         for fa in plan.files:
             if fa.path in error_text:
                 return fa
 
-        # Last resort: first source file in plan (any extension)
-        source_exts = ('.py', '.java', '.js', '.ts', '.jsx', '.tsx', '.go',
-                       '.rs', '.dart', '.rb', '.php', '.c', '.cpp', '.cs',
-                       '.kt', '.swift')
+        # Last resort: first non-delete file in plan
         for fa in plan.files:
-            if any(fa.path.endswith(ext) for ext in source_exts):
+            if fa.action != "delete":
                 return fa
-
-        return plan.files[0] if plan.files else None
 
     # ── Full Agentic Loop ───────────────────────────────────────────
 
