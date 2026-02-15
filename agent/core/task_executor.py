@@ -70,6 +70,7 @@ class ExecutionPlan:
     compile_command: str = ""      # e.g. "javac *.java", "go build", "cargo build"
     lint_command: str = ""         # e.g. "python -m py_compile", "go vet ./..."
     stack: str = ""                # detected stack name e.g. "python", "java"
+    run_commands: list[str] = field(default_factory=list)  # multi-step commands
 
 
 PLAN_SYSTEM_PROMPT = """You are a senior software engineer. You are given a task and context about a repository.
@@ -104,6 +105,7 @@ Rules:
 - compile_command: shell command to compile if needed (e.g. 'javac -cp . Main.java', 'go build', 'cargo build') or empty string
 - lint_command: shell command to check syntax (e.g. 'python -m py_compile file.py', 'javac -Xlint:all File.java', 'npx tsc --noEmit') or empty string
 - run_command: the shell command to run/verify the code works (e.g. 'python main.py', 'java Main', 'node index.js', 'go run main.go', 'docker-compose up --build')
+- run_commands: OPTIONAL list of multiple commands to run in sequence (e.g. ['npm install', 'npm run seed', 'npm start']). Use this if the task requires multiple steps. If provided, run_command is ignored.
 - test_command: command to run tests (leave empty string if no tests exist)
 - You can use ANY language or framework (Python, Java, Node.js, Go, Rust, Flutter, React, Django, Flask, FastAPI, Spring Boot, Express, Docker, etc.)
 - Choose the best technology for the task if not specified"""
@@ -182,6 +184,62 @@ class TaskExecutor:
             pass
         return PYTHON  # Safe default
 
+    # ── Runtime Pre-Check ────────────────────────────────────────────
+
+    @staticmethod
+    def _check_runtime(plan: 'ExecutionPlan') -> list[str]:
+        """
+        Check if required runtimes are installed before executing.
+        Returns a list of missing tools (empty = all good).
+        """
+        import shutil
+
+        # Map stack/commands to required binaries
+        STACK_BINARIES = {
+            'java': ['java', 'javac'],
+            'node': ['node', 'npm'],
+            'go': ['go'],
+            'rust': ['cargo', 'rustc'],
+            'dart': ['dart'],
+            'docker': ['docker'],
+        }
+
+        # Check based on declared stack
+        stack = (plan.stack or '').lower()
+        required = set()
+        if stack in STACK_BINARIES:
+            required.update(STACK_BINARIES[stack])
+
+        # Also scan commands for tool references
+        all_commands = ' '.join(filter(None, [
+            plan.install_command, plan.compile_command,
+            plan.run_command, plan.test_command, plan.lint_command,
+        ] + plan.run_commands)).lower()
+
+        COMMAND_KEYWORDS = {
+            'javac': 'javac', 'java ': 'java', 'mvn': 'mvn', 'gradle': 'gradle',
+            'node ': 'node', 'npm ': 'npm', 'npx ': 'npx', 'yarn': 'yarn',
+            'pnpm': 'pnpm', 'bun ': 'bun',
+            'go ': 'go', 'go build': 'go', 'go run': 'go',
+            'cargo ': 'cargo', 'rustc': 'rustc',
+            'docker': 'docker', 'docker-compose': 'docker-compose',
+            'flutter': 'flutter', 'dart ': 'dart',
+            'python': 'python', 'pip': 'pip',
+            'psql': 'psql', 'mysql': 'mysql', 'sqlite3': 'sqlite3',
+        }
+
+        for keyword, binary in COMMAND_KEYWORDS.items():
+            if keyword in all_commands:
+                required.add(binary)
+
+        # Check which are missing
+        missing = []
+        for binary in required:
+            if not shutil.which(binary):
+                missing.append(binary)
+
+        return missing
+
     def _read_repo_context(self) -> str:
         """Read the repo structure and key files for context."""
         context_parts = []
@@ -230,9 +288,20 @@ class TaskExecutor:
         """Use LLM to generate an execution plan."""
         context = self._read_repo_context()
 
+        # Build stack hint for the LLM
+        stack_hint = ""
+        if self._stack_profile:
+            stack_hint = (
+                f"\n\nDetected stack: {self._stack_profile.display_name}"
+                f"\nPreferred language: {self._stack_profile.code_prompt_language}"
+            )
+
         messages = [
             {"role": "system", "content": PLAN_SYSTEM_PROMPT},
-            {"role": "user", "content": f"Task: {task}\n\nRepository context:\n{context}"},
+            {"role": "user", "content": (
+                f"Task: {task}{stack_hint}"
+                f"\n\nRepository context:\n{context}"
+            )},
         ]
 
         logger.info("Generating execution plan via LLM...")
@@ -258,6 +327,7 @@ class TaskExecutor:
             compile_command=plan_data.get("compile_command", ""),
             lint_command=plan_data.get("lint_command", ""),
             stack=plan_data.get("stack", "python"),
+            run_commands=plan_data.get("run_commands", []),
         )
 
         for f in plan_data.get("files", []):
@@ -482,7 +552,7 @@ class TaskExecutor:
     def _run_server(self, command: str) -> RunResult:
         """
         Start a long-running server process in the background.
-        Wait briefly for startup, check if it's running, then return success.
+        Wait briefly for startup, health-check if possible, then return success.
         """
         import time
 
@@ -504,7 +574,6 @@ class TaskExecutor:
             # Check if it crashed immediately
             poll = process.poll()
             if poll is not None:
-                # Process already exited — grab output
                 stdout, stderr = process.communicate(timeout=5)
                 print(f"  ❌ Server exited immediately (code {poll})")
                 error_text = (stderr or stdout).strip()
@@ -512,9 +581,19 @@ class TaskExecutor:
                     print(f"     {line}")
                 return RunResult(False, stdout, stderr, poll, command)
 
-            # Process is still running — success!
+            # Process is still running — try health check
             print(f"  ✅ Server started (PID: {process.pid})")
-            print(f"  ℹ️  Running in background — will terminate after task completes")
+
+            # Try to detect port and health-check
+            port = self._detect_port(command)
+            if port:
+                health_ok = self._health_check(port)
+                if health_ok:
+                    print(f"  🏥 Health check passed (localhost:{port})")
+                else:
+                    print(f"  ⚠️  Health check on port {port} — server may still be starting")
+            else:
+                print(f"  ℹ️  Running in background — will terminate after task completes")
 
             # Store for cleanup later
             if not hasattr(self, '_background_processes'):
@@ -527,6 +606,56 @@ class TaskExecutor:
         except OSError as e:
             print(f"  ❌ Failed to start server: {e}")
             return RunResult(False, "", str(e), -1, command)
+
+    @staticmethod
+    def _detect_port(command: str) -> Optional[int]:
+        """Try to extract port number from a server command."""
+        # Common patterns: --port 8000, -p 3000, :5000, PORT=8080
+        import re as _re
+        patterns = [
+            _re.compile(r'--port[= ](\d+)'),
+            _re.compile(r'-p\s+(\d+)'),
+            _re.compile(r':(\d{4,5})\b'),
+            _re.compile(r'PORT[= ](\d+)'),
+        ]
+        for p in patterns:
+            m = p.search(command)
+            if m:
+                return int(m.group(1))
+
+        # Default ports for common servers
+        cmd_lower = command.lower()
+        defaults = {
+            'flask': 5000, 'uvicorn': 8000, 'gunicorn': 8000,
+            'streamlit': 8501, 'django': 8000, 'express': 3000,
+            'next': 3000, 'vite': 5173, 'react-scripts': 3000,
+            'ng serve': 4200, 'http.server': 8000,
+        }
+        for kw, port in defaults.items():
+            if kw in cmd_lower:
+                return port
+        return None
+
+    @staticmethod
+    def _health_check(port: int, retries: int = 3) -> bool:
+        """Try to reach localhost:port — returns True if server responds."""
+        import time
+        import urllib.request
+        import urllib.error
+
+        for i in range(retries):
+            try:
+                req = urllib.request.Request(
+                    f'http://localhost:{port}',
+                    method='GET',
+                )
+                urllib.request.urlopen(req, timeout=3)
+                return True
+            except (urllib.error.URLError, urllib.error.HTTPError,
+                    ConnectionError, OSError):
+                if i < retries - 1:
+                    time.sleep(2)
+        return False
 
     def cleanup_background(self):
         """Stop any background server processes started during execution."""
@@ -576,17 +705,52 @@ class TaskExecutor:
 
     def _identify_error_file(self, error_text: str,
                              plan: ExecutionPlan) -> Optional[FileAction]:
-        """Parse traceback to find which planned file caused the error."""
-        # Look for 'File "xxx.py", line N' patterns in traceback
-        tb_files = re.findall(r'File "([^"]+)"', error_text)
+        """Parse error output to find which planned file caused the error.
 
-        # Match traceback filenames to planned files
-        for tb_file in reversed(tb_files):  # last frame is most relevant
-            tb_basename = os.path.basename(tb_file)
+        Handles tracebacks/stack traces from multiple languages:
+        - Python: File "xxx.py", line N
+        - Java:   at com.example.Main.main(Main.java:5)
+        - Node:   at Object.<anonymous> (/path/file.js:10:3)
+        - Go:     main.go:15:2: undefined
+        - Rust:   --> src/main.rs:5:10
+        """
+        # Multi-language file extraction patterns
+        import re as _re
+
+        patterns = [
+            # Python: File "path/to/file.py", line N
+            _re.compile(r'File "([^"]+)"'),
+            # Java: at package.Class.method(File.java:N)
+            _re.compile(r'\(([\w./]+\.java):\d+\)'),
+            # Kotlin: at package.Class.method(File.kt:N)
+            _re.compile(r'\(([\w./]+\.kt):\d+\)'),
+            # Node.js: at Something (/path/to/file.js:N:N) or (file.ts:N:N)
+            _re.compile(r'\(([^)]+\.[jt]sx?):\d+:\d+\)'),
+            # Node.js: at /path/to/file.js:N:N (no parens)
+            _re.compile(r'at\s+(/[^\s]+\.[jt]sx?):\d+'),
+            # Go: file.go:N:N: error
+            _re.compile(r'([\w./]+\.go):\d+'),
+            # Rust: --> src/main.rs:N:N
+            _re.compile(r'-->\s*([\w./]+\.rs):\d+'),
+            # C/C++: file.c:N:N: error
+            _re.compile(r'([\w./]+\.[ch](?:pp)?):\d+:\d+'),
+            # Dart/Flutter: package:app/file.dart:N:N
+            _re.compile(r'([\w./]+\.dart):\d+'),
+        ]
+
+        # Collect all referenced files from all patterns
+        referenced_files = []
+        for pattern in patterns:
+            matches = pattern.findall(error_text)
+            referenced_files.extend(matches)
+
+        # Match referenced files to planned files (last match = most relevant)
+        for ref_file in reversed(referenced_files):
+            ref_basename = os.path.basename(ref_file)
             for fa in plan.files:
-                if fa.path == tb_basename or fa.path.endswith(tb_basename):
+                if fa.path == ref_file or fa.path.endswith(ref_file):
                     return fa
-                if os.path.basename(fa.path) == tb_basename:
+                if fa.path == ref_basename or os.path.basename(fa.path) == ref_basename:
                     return fa
 
         # Fallback: check if any planned file is mentioned in error text
@@ -596,7 +760,8 @@ class TaskExecutor:
 
         # Last resort: first source file in plan (any extension)
         source_exts = ('.py', '.java', '.js', '.ts', '.jsx', '.tsx', '.go',
-                       '.rs', '.dart', '.rb', '.php', '.c', '.cpp', '.cs')
+                       '.rs', '.dart', '.rb', '.php', '.c', '.cpp', '.cs',
+                       '.kt', '.swift')
         for fa in plan.files:
             if any(fa.path.endswith(ext) for ext in source_exts):
                 return fa
@@ -666,8 +831,40 @@ class TaskExecutor:
             print(f"   [{f.action.upper()}] {f.path} — {f.description}")
         if plan.run_command:
             print(f"🏃 Run: {plan.run_command}")
+        if plan.run_commands:
+            print(f"🏃 Run steps: {len(plan.run_commands)} commands")
+            for i, cmd in enumerate(plan.run_commands, 1):
+                print(f"   {i}. {cmd}")
         if plan.test_command:
             print(f"🧪 Test: {plan.test_command}")
+
+        # ── Step 1b: Runtime pre-check ──
+        print(f"\n🔍 Checking runtime requirements...")
+        missing = self._check_runtime(plan)
+        if missing:
+            msg = ', '.join(missing)
+            print(f"  ❌ Missing required tools: {msg}")
+            print(f"  💡 Install them before running this task:")
+            install_hints = {
+                'java': 'brew install openjdk (macOS) / apt install default-jdk (Linux)',
+                'javac': 'brew install openjdk (macOS) / apt install default-jdk (Linux)',
+                'node': 'brew install node (macOS) / nvm install --lts',
+                'npm': 'comes with node',
+                'go': 'brew install go (macOS) / https://go.dev/dl/',
+                'docker': 'https://docs.docker.com/get-docker/',
+                'docker-compose': 'pip install docker-compose or Docker Desktop',
+                'cargo': 'curl --proto =https --tlsv1.2 -sSf https://sh.rustup.rs | sh',
+                'flutter': 'https://docs.flutter.dev/get-started/install',
+                'dart': 'comes with flutter',
+            }
+            for tool in missing:
+                hint = install_hints.get(tool, f'install {tool}')
+                print(f"     • {tool}: {hint}")
+            self.last_run_success = False
+            self.last_error = f"Missing required tools: {msg}. Install them and try again."
+            return plan
+        else:
+            print(f"  ✅ All required tools available")
 
         # ── Check kill switch ──
         ks_state = kill_switch.check()
@@ -819,51 +1016,59 @@ class TaskExecutor:
             print(f"  ✅ Compilation successful")
 
         # ── Step 8: Run code ──
-        if plan.run_command:
-            run_result = self.run_code(plan.run_command)
+        commands_to_run = plan.run_commands if plan.run_commands else ([plan.run_command] if plan.run_command else [])
 
-            # ── Step 9: Self-correction loop ──
-            attempt = 0
-            while not run_result.success and attempt < MAX_FIX_ATTEMPTS:
-                # Kill switch check
-                ks_state = kill_switch.check()
-                if ks_state:
-                    print(f"\n🛑 Kill switch during fix loop: {ks_state.value}")
+        if commands_to_run:
+            for cmd_idx, command in enumerate(commands_to_run):
+                if len(commands_to_run) > 1:
+                    print(f"\n📌 Step {cmd_idx + 1}/{len(commands_to_run)}")
+
+                run_result = self.run_code(command)
+
+                # ── Step 9: Self-correction loop (only for the last/main command) ──
+                attempt = 0
+                while not run_result.success and attempt < MAX_FIX_ATTEMPTS:
+                    ks_state = kill_switch.check()
+                    if ks_state:
+                        print(f"\n🛑 Kill switch during fix loop: {ks_state.value}")
+                        self.last_run_success = False
+                        return plan
+
+                    attempt += 1
+                    error_text = (run_result.stderr or run_result.stdout)[-2000:]
+
+                    print(f"\n🔧 Fix attempt {attempt}/{MAX_FIX_ATTEMPTS}...")
+
+                    main_file = self._identify_error_file(error_text, plan)
+
+                    if main_file:
+                        fixed_code = self.fix_error(task, main_file, error_text, plan)
+
+                        secret_matches = secrets.scan(fixed_code)
+                        if secret_matches:
+                            fixed_code = secrets.redact(fixed_code)
+
+                        self._write_file(main_file, fixed_code)
+                        lines = len(fixed_code.split('\n'))
+                        print(f"  📝 Rewrote: {main_file.path} ({lines} lines)")
+
+                    # Recompile if needed before re-running
+                    if plan.compile_command:
+                        self.run_code(plan.compile_command)
+
+                    run_result = self.run_code(command)
+
+                self.fix_attempts_used += attempt
+
+                if run_result.success:
+                    print(f"\n✅ Command succeeded!")
+                else:
+                    print(f"\n⚠️  Command failed after {MAX_FIX_ATTEMPTS} fix attempts")
+                    last_err = (run_result.stderr or run_result.stdout)[-500:]
+                    print(f"    Last error: {last_err}")
                     self.last_run_success = False
-                    return plan
-
-                attempt += 1
-                error_text = (run_result.stderr or run_result.stdout)[-2000:]
-
-                print(f"\n🔧 Fix attempt {attempt}/{MAX_FIX_ATTEMPTS}...")
-
-                # Find the file that caused the error using traceback
-                main_file = self._identify_error_file(error_text, plan)
-
-                if main_file:
-                    fixed_code = self.fix_error(task, main_file, error_text, plan)
-
-                    # Re-scan for secrets
-                    secret_matches = secrets.scan(fixed_code)
-                    if secret_matches:
-                        fixed_code = secrets.redact(fixed_code)
-
-                    self._write_file(main_file, fixed_code)
-                    lines = len(fixed_code.split('\n'))
-                    print(f"  📝 Rewrote: {main_file.path} ({lines} lines)")
-
-                run_result = self.run_code(plan.run_command)
-
-            self.fix_attempts_used = attempt
-
-            if run_result.success:
-                print(f"\n✅ Code runs successfully!")
-            else:
-                print(f"\n⚠️  Code still failing after {MAX_FIX_ATTEMPTS} fix attempts")
-                last_err = (run_result.stderr or run_result.stdout)[-500:]
-                print(f"    Last error: {last_err}")
-                self.last_run_success = False
-                self.last_error = f"Code execution failed after {MAX_FIX_ATTEMPTS} attempts. Last error: {last_err}"
+                    self.last_error = f"Command failed: {command}. Last error: {last_err}"
+                    break  # Stop running remaining commands
 
         # ── Step 10: Verification pipeline ──
         print(f"\n🧪 Running verification pipeline...")
@@ -901,6 +1106,35 @@ class TaskExecutor:
                 print(f"  ✅ All {len(written_files)} files match plan")
         except Exception as e:
             logger.warning(f"Plan enforcement check failed: {e}")
+
+        # ── Step 12: Auto-git commit (on success) ──
+        if self.last_run_success:
+            try:
+                # Check if we're in a git repo
+                git_check = subprocess.run(
+                    ['git', 'rev-parse', '--is-inside-work-tree'],
+                    capture_output=True, text=True, cwd=self._repo_path,
+                )
+                if git_check.returncode == 0:
+                    # Stage all changed files
+                    files_to_add = [f.path for f in plan.files if f.action != "delete"]
+                    if files_to_add:
+                        subprocess.run(
+                            ['git', 'add'] + files_to_add,
+                            capture_output=True, cwd=self._repo_path,
+                        )
+                        # Commit with descriptive message
+                        commit_msg = f"[god-mode-agent] {plan.summary}"
+                        result = subprocess.run(
+                            ['git', 'commit', '-m', commit_msg, '--no-verify'],
+                            capture_output=True, text=True, cwd=self._repo_path,
+                        )
+                        if result.returncode == 0:
+                            print(f"\n📝 Auto-committed: {commit_msg}")
+                        else:
+                            logger.info(f"Auto-commit skipped: {result.stderr[:200]}")
+            except Exception as e:
+                logger.info(f"Auto-commit skipped: {e}")
 
         # ── Done ──
         print(f"\n🎉 Task complete! {len(plan.files)} files written to {self._repo_path}")
