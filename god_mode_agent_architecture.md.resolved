@@ -194,6 +194,10 @@ On successful task completion, auto-commits with `[god-mode-agent] <summary>` an
 | **LLMProvider** | `agent/llm_provider.py` | Together AI integration |
 | **WebUI** | `agent/web_ui.py` | Streamlit chat interface |
 | **CLI** | `agent/cli.py` | Command-line interface |
+| **DockerInspector** | `agent/tools/docker_inspector.py` | Container runtime analysis |
+| **DatabaseInspector** | `agent/tools/db_inspector.py` | DB schema & data verification |
+| **BrowserTester** | `agent/tools/browser_tester.py` | Headless web UI verification |
+| **DocCrawler** | `agent/tools/doc_crawler.py` | External documentation fetcher |
 
 ---
 

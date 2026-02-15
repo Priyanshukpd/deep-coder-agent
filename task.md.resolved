@@ -89,3 +89,24 @@
     - [x] Environment Variable Handling (.env detection/generation)
     - [x] Database Lifecycle Management (Migrate/Seed hooks)
 
+- [x] **Phase 11: Cognitive Enhancements ("The Brain")**
+    - [x] Smart Stack Detection (LLM Fallback)
+    - [x] Persistent Memory (`.agent/architecture.md`)
+    - [x] Semantic Code Search (`_select_relevant_files`)
+
+- [x] **Phase 12: Tooling Depth ("The Hands")**
+    - [x] Docker Inspector
+    - [x] Database Inspector
+    - [x] Browser Tester
+
+- [x] **Phase 13: Interactive Troubleshooting ("The Mouth")**
+    - [x] Guided Debugging (Ask for help)
+
+- [x] **Phase 14: External Knowledge ("The Library Card")** 📚
+    - [x] Doc Crawler Tool
+    - [x] Auto-Research on Import Errors
+
+- [x] **Phase 1-13 Polish (Robustness)** 💎
+    - [x] Active Debugging (Auto-Inspectors)
+    - [x] Process Resilience (Fast Failure Detection)
+

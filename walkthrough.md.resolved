@@ -71,6 +71,26 @@ Step 12 → Auto-Git Commit ([god-mode-agent] summary)
 | **Auto-git commit** | On success → `git add` + `commit "[god-mode-agent] ..."` |
 | **Background cleanup** | All Popen processes terminated in `finally` block |
 
+### Phase 11: Cognitive Enhancements ("The Brain")
+- **Smart Stack Detection**: LLM heuristic fallback if `RepoDiscovery` fails.
+- **Persistent Memory**: `.agent/architecture.md` logs key decisions.
+- **Semantic Code Search**: Context-aware file selection (`_select_relevant_files`).
+
+### Phase 12: Tooling Depth ("The Hands")
+- **Docker Inspector**: `logs`, `inspect`, `exec` for container debugging.
+- **Database Inspector**: `inspect_tables`, `check_migrations`.
+- **Browser Tester**: Headless `playwright` verification of web UIs.
+
+### Phase 13: Interactive Troubleshooting ("The Mouth")
+- **Guided Debugging**: `_ask_for_help` prompt if self-correction fails 3 times.
+
+### Phase 14: External Knowledge ("The Library Card") 📚
+- **Doc Crawler**: `search_docs` + `read_page` to fetch API docs on-the-fly.
+- **Auto-Research**: Triggers on `ImportError`/`AttributeError`.
+
+### Phase 1-13 Polish (Robustness) 💎
+- **Active Debugging**: Auto-run inspectors/crawlers on error -> feed logs to LLM.
+- **Process Resilience**: `wait_for_port` detects early crashes immediately.
 ---
 
 ## Governance Layer (37 Modules)
