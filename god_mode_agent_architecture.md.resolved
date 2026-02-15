@@ -241,7 +241,7 @@ Step 12: AUTO-GIT COMMIT ──→ [On success: git add + commit "[god-mode-agen
 
 | Layer | Mechanism |
 |-------|-----------|
-| **Kill Switch** | Emergency halt at any step |
+| **Kill Switch** | Adaptive timeouts (stack-aware, extensible) + 90m hard cap |
 | **Command Safety** | Tier-based: SAFE / NETWORK / BLOCK |
 | **RBAC** | Role-based permissions (DEVELOPER, ARCHITECT, ADMIN) |
 | **Secrets Policy** | Regex-based detection + auto-redaction |

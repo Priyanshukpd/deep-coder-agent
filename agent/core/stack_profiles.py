@@ -105,6 +105,18 @@ DOCKER = StackProfile(
                           ".html", ".css", ".env", ".sh"),
 )
 
+POLYGLOT = StackProfile(
+    name="polyglot",
+    display_name="Polyglot / Full Stack",
+    extensions=(),
+    code_prompt_language="the appropriate programming languages (e.g. Java + React)",
+    file_read_extensions=(".py", ".js", ".ts", ".jsx", ".tsx", ".java", ".kt",
+                          ".go", ".rs", ".dart", ".yaml", ".yml", ".json",
+                          ".toml", ".xml", ".md", ".html", ".css", ".sh", ".env",
+                          ".gradle", ".properties"),
+    timeout_seconds=300,
+)
+
 # Generic / unknown — reads everything, no lint assumptions
 GENERIC = StackProfile(
     name="generic",
@@ -128,6 +140,7 @@ ALL_PROFILES = {
     "rust": RUST,
     "dart": DART, "flutter": DART,
     "docker": DOCKER,
+    "polyglot": POLYGLOT, "fullstack": POLYGLOT,
 }
 
 
@@ -171,9 +184,18 @@ def detect_profile_from_task(task: str) -> Optional[StackProfile]:
                   "numpy", "scipy", "matplotlib"]),
     ]
 
+    found_profiles = set()
     for profile, keywords in TASK_KEYWORDS:
         for kw in keywords:
             if kw in task_lower:
-                return profile
+                found_profiles.add(profile)
+                break
+    
+    if len(found_profiles) > 1:
+        # e.g. Node (React) + Java (Spring) detected -> Use Polyglot profile
+        return POLYGLOT
+    
+    if len(found_profiles) == 1:
+        return list(found_profiles)[0]
 
     return None

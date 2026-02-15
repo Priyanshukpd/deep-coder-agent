@@ -11,15 +11,15 @@ Uses the LLM to:
 7. Self-correct (feed errors back to LLM, regenerate, retry)
 
 Integrates:
-    - PlanEnvelopeValidator  — freeze & hash the plan (Architecture §2.F)
-    - TaskIsolation          — atomic git branching (Architecture §3)
-    - KillSwitch             — SIGINT/timeout/stale handling (Architecture §1)
-    - SecretsPolicy          — scan generated code for leaked secrets
-    - SandboxedRunner        — sandboxed command execution
-    - BoundedLSPLoop         — syntax/lint retry (3 attempts max)
-    - VerificationPipeline   — tiered verification (syntax → lint → test → CI)
-    - PlanEnforcer           — validate files written match the plan
-    - SupplyChainChecker     — typosquatting detection on dependencies
+    - PlanEnvelopeValidator  - freeze & hash the plan (Architecture §2.F)
+    - TaskIsolation          - atomic git branching (Architecture §3)
+    - KillSwitch             - SIGINT/timeout/stale handling (Architecture §1)
+    - SecretsPolicy          - scan generated code for leaked secrets
+    - SandboxedRunner        - sandboxed command execution
+    - BoundedLSPLoop         - syntax/lint retry (3 attempts max)
+    - VerificationPipeline   - tiered verification (syntax -> lint -> test -> CI)
+    - PlanEnforcer           - validate files written match the plan
+    - SupplyChainChecker     - typosquatting detection on dependencies
 """
 
 from __future__ import annotations
@@ -27,13 +27,19 @@ from __future__ import annotations
 import os
 import json
 import subprocess
+import signal
 import sys
+import shutil
 import logging
 import re
 from dataclasses import dataclass, field
-from typing import Optional
+from threading import Thread
+from typing import Optional, List, Dict, Any, Union
 
 logger = logging.getLogger(__name__)
+
+from agent.core.process_manager import ProcessManager, ProcessInfo
+from agent.planning.memory import ArchitectureMemory
 
 MAX_FIX_ATTEMPTS = 3
 
@@ -71,6 +77,9 @@ class ExecutionPlan:
     lint_command: str = ""         # e.g. "python -m py_compile", "go vet ./..."
     stack: str = ""                # detected stack name e.g. "python", "java"
     run_commands: list[str] = field(default_factory=list)  # multi-step commands
+    background_processes: list[str] = field(default_factory=list) # e.g. ["npm run server", "docker-compose up -d db"]
+    db_migrate_command: str = ""   # e.g. "python manage.py migrate", "npx prisma migrate dev"
+    db_seed_command: str = ""      # e.g. "python manage.py loaddata", "npx prisma db seed"
 
 
 PLAN_SYSTEM_PROMPT = """You are a senior software engineer. You are given a task and context about a repository.
@@ -91,7 +100,10 @@ Your job is to create a detailed execution plan as a JSON object with this schem
     }
   ],
   "run_command": "python main.py",
-  "test_command": "python -m pytest tests/ -v"
+  "background_processes": ["npm run start:api"],
+  "db_migrate_command": "",
+  "db_seed_command": "",
+  "test_command": "python -m pytest tests/"
 }
 
 Rules:
@@ -110,6 +122,42 @@ Rules:
 - You can use ANY language or framework (Python, Java, Node.js, Go, Rust, Flutter, React, Django, Flask, FastAPI, Spring Boot, Express, Docker, etc.)
 - Choose the best technology for the task if not specified"""
 
+STACK_DETECTION_PROMPT = """Analyze the file listing and file contents to identify the technology stack.
+
+Context:
+- Primary file list (first 100 files)
+- Key configuration files (if any)
+
+Output a JSON object with this schema:
+{
+  "primary_language": "python",
+  "frameworks": ["django", "react"],
+  "recommended_profile": "python" // one of [python, java, node, go, rust, dart, docker, polyglot, generic]
+}
+"""
+
+RELEVANCE_PROMPT = """Analyze the file list and the task. Identify the top 5-10 files that are most likely to contain the logic relevant to the task, or files that need to be modified.
+
+Context:
+- Task: {task}
+- Detected Stack: {stack}
+
+Output a JSON object:
+{
+  "relevant_files": ["path/to/file1.py", "path/to/file2.js"],
+  "reasoning": "Brief explanation"
+}
+"""
+
+
+
+HELP_SYSTEM_PROMPT = """You are a senior engineer who is stuck on a task after multiple attempts.
+Analyze the task and the specific error.
+Formulate a specific, concise question to ask the user to unblock you.
+Focus on environmental issues, missing secrets, or ambiguous requirements.
+Do not apologize. Be direct.
+Example: "The API key in .env seems invalid (401 Unauthorized). Can you provide a fresh key?"
+"""
 
 CODE_SYSTEM_PROMPT_TEMPLATE = """You are a senior software engineer. Generate production-quality {language} code.
 
@@ -156,6 +204,20 @@ class TaskExecutor:
         self.last_run_success = True
         self.last_error: Optional[str] = None
         self._stack_profile = None  # Set during execute()
+        self._process_manager = ProcessManager()
+        self._process_manager = ProcessManager()
+        self._memory = ArchitectureMemory(self._repo_path, self._provider)
+        
+        # Phase 12 & 14 Tools
+        from agent.tools.docker_inspector import DockerInspector
+        from agent.tools.db_inspector import DatabaseInspector
+        from agent.tools.browser_tester import BrowserTester
+        from agent.tools.doc_crawler import DocCrawler
+        
+        self.docker_inspector = DockerInspector()
+        self.db_inspector = DatabaseInspector()
+        self.browser_tester = BrowserTester()
+        self.doc_crawler = DocCrawler()
 
     def set_rollback_manager(self, mgr):
         """Attach a rollback manager that backs up files before writes."""
@@ -164,25 +226,88 @@ class TaskExecutor:
     def _detect_stack(self, task: str):
         """Detect the technology stack from the task + repo."""
         from agent.core.stack_profiles import (
-            detect_profile_from_task, detect_profile_from_stack, PYTHON, GENERIC
+            detect_profile_from_task, detect_profile_from_stack, 
+            PYTHON, GENERIC, ALL_PROFILES
         )
-        # Try task-based detection first
+
+        # 1. Try task-based detection first (fast path)
         profile = detect_profile_from_task(task)
         if profile:
             return profile
-        # Then try repo-based detection
+
+        # 2. Try repo-based detection
+        repo_map = None
         try:
             from agent.planning.repo_discovery import RepoDiscovery
             discovery = RepoDiscovery(self._repo_path)
             repo_map = discovery.scan()
             if repo_map.stack and repo_map.stack.primary_language:
-                return detect_profile_from_stack(
+                profile = detect_profile_from_stack(
                     repo_map.stack.primary_language,
                     repo_map.stack.frameworks
                 )
         except Exception:
-            pass
-        return PYTHON  # Safe default
+            profile = GENERIC
+
+        # 3. LLM Fallback (Smart Detection)
+        # If still generic, ask the LLM to inspect the repo map
+        if not profile or profile == GENERIC:
+            if repo_map:
+                try:
+                    logger.info("Heuristic stack detection failed. Asking LLM...")
+                    llm_profile_name = self._detect_stack_llm(repo_map)
+                    if llm_profile_name and llm_profile_name in ALL_PROFILES:
+                         return ALL_PROFILES[llm_profile_name]
+                except Exception as e:
+                    logger.warning(f"LLM stack detection failed: {e}")
+            
+            # Final fallback
+            return PYTHON
+
+        return profile
+
+    def _detect_stack_llm(self, repo_map) -> Optional[str]:
+        """Ask LLM to identify the stack from the repo map."""
+        import json
+        
+        # Prepare context (file list + top-level files)
+        files = repo_map.files[:100] # Top 100 files
+        file_list_str = "\n".join(files)
+        
+        # Read key config files if present
+        config_files = ["package.json", "pom.xml", "build.gradle", "go.mod", "Cargo.toml", "pyproject.toml", "requirements.txt", "Dockerfile"]
+        config_content = ""
+        for cf in config_files:
+            if cf in repo_map.files:
+                try:
+                    with open(os.path.join(self._repo_path, cf), 'r') as f:
+                        content = f.read(2000) # limit size
+                    config_content += f"\n=== {cf} ===\n{content}\n"
+                except Exception:
+                    pass
+
+        messages = [
+            {"role": "system", "content": STACK_DETECTION_PROMPT},
+            {"role": "user", "content": (
+                f"File list (partial):\n{file_list_str}\n\n"
+                f"Configuration files:\n{config_content}"
+            )},
+        ]
+        
+        result = self._provider.complete(messages)
+        content = result.content.strip()
+        
+        try:
+             # Extract JSON
+             if "```" in content:
+                 content = content.split("```json")[-1].split("```")[0].strip()
+             elif content.startswith("```"):
+                 content = content.strip("`").strip()
+             
+             data = json.loads(content)
+             return data.get("recommended_profile")
+        except Exception:
+             return None
 
     # ── Runtime Pre-Check ────────────────────────────────────────────
 
@@ -240,6 +365,48 @@ class TaskExecutor:
 
         return missing
 
+ 
+
+    def _ensure_env_file(self):
+        """Check for .env.example and generate .env if missing."""
+        env_path = os.path.join(self._repo_path, '.env')
+        example_path = os.path.join(self._repo_path, '.env.example')
+        
+        if os.path.exists(env_path):
+            return
+
+        if not os.path.exists(example_path):
+            # Try other common names
+            for name in ['.env.template', '.env.sample', 'env.example']:
+                 p = os.path.join(self._repo_path, name)
+                 if os.path.exists(p):
+                     example_path = p
+                     break
+            else:
+                return
+
+        print(f"\n📝 Generating .env from {os.path.basename(example_path)}...")
+        with open(example_path, 'r') as f:
+            example_content = f.read()
+
+        messages = [
+            {"role": "system", "content": ENV_SYSTEM_PROMPT},
+            {"role": "user", "content": f"Example content:\n{example_content}"},
+        ]
+        
+        result = self._provider.complete(messages)
+        env_content = result.content.strip()
+        
+        # Strip markdown fences if present
+        if env_content.startswith("```"):
+            env_content = env_content.split("\n", 1)[1]
+            env_content = env_content.rsplit("```", 1)[0]
+            
+        with open(env_path, 'w') as f:
+            f.write(env_content)
+        
+        print(f"  ✅ Created .env")
+
     def _read_repo_context(self) -> str:
         """Read the repo structure and key files for context."""
         context_parts = []
@@ -283,10 +450,75 @@ class TaskExecutor:
         return "\n".join(context_parts)
 
     # ── Plan Generation ─────────────────────────────────────────────
+    
+    def _select_relevant_files(self, task: str, candidates: list[str]) -> list[str]:
+        """Ask LLM to pick relevant files from a list."""
+        if not candidates:
+            return []
+            
+        file_list_str = "\n".join(candidates[:500]) # Scan top 500 files
+        
+        messages = [
+            {"role": "system", "content": RELEVANCE_PROMPT.format(
+                task=task,
+                stack=self._stack_profile.display_name if self._stack_profile else "Unknown"
+            )},
+            {"role": "user", "content": f"File list:\n{file_list_str}"},
+        ]
+        
+        try:
+            logger.info(" selecting relevant files via LLM...")
+            result = self._provider.complete(messages)
+            content = result.content.strip()
+            
+            if content.startswith("```"):
+                content = content.split("```json")[-1].split("```")[0].strip()
+            
+            data = json.loads(content)
+            return data.get("relevant_files", [])
+        except Exception as e:
+            logger.warning(f"Failed to select relevant files: {e}")
+            return candidates[:20] # Fallback to first 20
+
+    def _read_smart_context(self, task: str) -> str:
+        """Smartly select and read relevant files for the task."""
+        candidates = []
+        for root, _, files in os.walk(self._repo_path):
+             if any(part.startswith('.') for part in root.split(os.sep)):
+                 continue
+             for f in files:
+                 candidates.append(os.path.relpath(os.path.join(root, f), self._repo_path))
+        
+        # If small repo, read all supported files
+        if len(candidates) < 20:
+             return self._read_repo_context() # Existing logic
+
+        # If large repo, select relevant
+        relevant = self._select_relevant_files(task, candidates)
+        if not relevant:
+             return self._read_repo_context()
+
+        # Read content of relevant files
+        context_parts = []
+        context_parts.append(f"Repository: {self._repo_path}\n")
+        context_parts.append(f"Selected relevant files for task '{task}':")
+        
+        for rel_path in relevant:
+             full_path = os.path.join(self._repo_path, rel_path)
+             if os.path.exists(full_path):
+                 try:
+                     with open(full_path, 'r', errors='replace') as fh:
+                         content = fh.read(8000) # Limit size
+                     context_parts.append(f"\n=== {rel_path} ===\n{content}")
+                 except Exception:
+                     pass
+        
+        return "\n".join(context_parts)
 
     def generate_plan(self, task: str) -> ExecutionPlan:
         """Use LLM to generate an execution plan."""
-        context = self._read_repo_context()
+        # Use smart context loading
+        context = self._read_smart_context(task)
 
         # Build stack hint for the LLM
         stack_hint = ""
@@ -295,6 +527,11 @@ class TaskExecutor:
                 f"\n\nDetected stack: {self._stack_profile.display_name}"
                 f"\nPreferred language: {self._stack_profile.code_prompt_language}"
             )
+
+        # Read architectural context
+        arch_mem = self._memory.read_context()
+        if arch_mem:
+             stack_hint += f"\n\n{arch_mem}"
 
         messages = [
             {"role": "system", "content": PLAN_SYSTEM_PROMPT},
@@ -328,6 +565,9 @@ class TaskExecutor:
             lint_command=plan_data.get("lint_command", ""),
             stack=plan_data.get("stack", "python"),
             run_commands=plan_data.get("run_commands", []),
+            background_processes=plan_data.get("background_processes", []),
+            db_migrate_command=plan_data.get("db_migrate_command", ""),
+            db_seed_command=plan_data.get("db_seed_command", ""),
         )
 
         for f in plan_data.get("files", []):
@@ -474,7 +714,7 @@ class TaskExecutor:
     def _is_server_command(command: str) -> bool:
         """
         Detect if a command starts a long-running server/daemon.
-        These should NOT block — we start, health check, then move on.
+        These should NOT block - we start, health check, then move on.
         """
         cmd_lower = command.lower()
         return any(kw in cmd_lower for kw in [
@@ -495,18 +735,12 @@ class TaskExecutor:
     def run_code(self, command: str) -> RunResult:
         """
         Run a command in the repo directory and capture output.
-
-        Handles:
-        - Smart timeouts based on command type (Docker=10m, build=5m, etc.)
-        - Server/daemon detection → start with Popen, health check, move on
-        - Multi-command sequences (&&, ;)
-        - Graceful cleanup on timeout
-        - Any language/framework/shell command
+        Handles smart timeouts and server detection.
         """
         if not command:
             return RunResult(True, "", "", 0, "")
 
-        print(f"\n🏃 Running: {command}")
+        print(f"\nrunning: {command}")
 
         # Check if this is a long-running server
         if self._is_server_command(command):
@@ -515,39 +749,24 @@ class TaskExecutor:
         # Smart timeout
         timeout = self._smart_timeout(command)
         if timeout != 120:
-            print(f"  ⏱️  Timeout: {timeout}s (auto-detected)")
+            print(f"  Wait  Timeout: {timeout}s (auto-detected)")
 
-        try:
-            # Use environment that inherits everything + adds repo to PATH
-            env = os.environ.copy()
-            env['PATH'] = self._repo_path + os.pathsep + env.get('PATH', '')
+        # Use environment that inherits everything + adds repo to PATH
+        env = os.environ.copy()
+        env['PATH'] = self._repo_path + os.pathsep + env.get('PATH', '')
 
-            result = subprocess.run(
-                command, shell=True, capture_output=True, text=True,
-                timeout=timeout, cwd=self._repo_path, env=env,
-            )
-            success = result.returncode == 0
-
-            if success:
-                print(f"  ✅ Success (exit code 0)")
-                lines = result.stdout.strip().split('\n') if result.stdout.strip() else []
-                for line in lines[-10:]:
-                    print(f"     {line}")
-            else:
-                print(f"  ❌ Failed (exit code {result.returncode})")
-                error_text = (result.stderr or result.stdout).strip()
-                for line in error_text.split('\n')[-15:]:
-                    print(f"     {line}")
-
-            return RunResult(success, result.stdout, result.stderr,
-                             result.returncode, command)
-        except subprocess.TimeoutExpired:
-            print(f"  ⏰ Timed out ({timeout}s)")
-            return RunResult(False, "", f"Command timed out after {timeout}s", -1, command)
-        except OSError as e:
-            # Handle "command not found" type errors gracefully
-            print(f"  ❌ OS error: {e}")
-            return RunResult(False, "", str(e), -1, command)
+        # Use ProcessManager to stream output
+        rc, output = self._process_manager.run_stream(
+            command, cwd=self._repo_path, timeout=timeout, env=env
+        )
+        
+        success = rc == 0
+        if success:
+            print(f"  Success (exit code 0)")
+        else:
+            print(f"  Failed (exit code {rc})")
+            
+        return RunResult(success, output, "", rc, command)
 
     def _run_server(self, command: str) -> RunResult:
         """
@@ -556,56 +775,47 @@ class TaskExecutor:
         """
         import time
 
-        print(f"  🌐 Detected server command — starting in background...")
+        print(f"  Detected server command - starting in background...")
 
-        try:
-            env = os.environ.copy()
-            env['PATH'] = self._repo_path + os.pathsep + env.get('PATH', '')
+        env = os.environ.copy()
+        env['PATH'] = self._repo_path + os.pathsep + env.get('PATH', '')
 
-            process = subprocess.Popen(
-                command, shell=True,
-                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                text=True, cwd=self._repo_path, env=env,
-            )
+        # Use ProcessManager to start background process
+        info = self._process_manager.start_background(
+            command, cwd=self._repo_path, name="server", env=env
+        )
 
-            # Give it a few seconds to start (or crash)
-            time.sleep(3)
+        # Give it a few seconds to start (or crash)
+        time.sleep(3)
 
-            # Check if it crashed immediately
-            poll = process.poll()
-            if poll is not None:
-                stdout, stderr = process.communicate(timeout=5)
-                print(f"  ❌ Server exited immediately (code {poll})")
-                error_text = (stderr or stdout).strip()
-                for line in error_text.split('\n')[-10:]:
-                    print(f"     {line}")
-                return RunResult(False, stdout, stderr, poll, command)
+        # Check if it crashed immediately
+        poll = info.process.poll()
+        if poll is not None:
+            # Process already exited - check output lines
+            output = "".join(info.output_lines)
+            print(f"  Server exited immediately (code {poll})")
+            print(f"     Output: {output[-500:]}")
+            return RunResult(False, output, "", poll, command)
 
-            # Process is still running — try health check
-            print(f"  ✅ Server started (PID: {process.pid})")
+        # Process is still running - try health check
+        print(f"  Server started (PID: {info.process.pid})")
 
-            # Try to detect port and health-check
-            port = self._detect_port(command)
-            if port:
-                health_ok = self._health_check(port)
-                if health_ok:
-                    print(f"  🏥 Health check passed (localhost:{port})")
-                else:
-                    print(f"  ⚠️  Health check on port {port} — server may still be starting")
+        # Try to detect port and health-check
+        # Try to detect port and health-check
+        port = self._detect_port(command)
+        if port:
+            print(f"  Waiting for port {port}...")
+            # Use ProcessManager wait_for_port (retries up to 30s)
+            health_ok, reason = self._process_manager.wait_for_port(port, timeout=30)
+            if health_ok:
+                print(f"  Health check passed (localhost:{port})")
             else:
-                print(f"  ℹ️  Running in background — will terminate after task completes")
+                print(f"  Health check failed: {reason}")
+        else:
+             print(f"  Could not detect port from command - check logs if it fails")
 
-            # Store for cleanup later
-            if not hasattr(self, '_background_processes'):
-                self._background_processes = []
-            self._background_processes.append(process)
-
-            return RunResult(True, f"Server started (PID {process.pid})",
-                             "", 0, command)
-
-        except OSError as e:
-            print(f"  ❌ Failed to start server: {e}")
-            return RunResult(False, "", str(e), -1, command)
+        return RunResult(True, f"Server started (PID {info.process.pid})",
+                         "", 0, command)
 
     @staticmethod
     def _detect_port(command: str) -> Optional[int]:
@@ -638,7 +848,7 @@ class TaskExecutor:
 
     @staticmethod
     def _health_check(port: int, retries: int = 3) -> bool:
-        """Try to reach localhost:port — returns True if server responds."""
+        """Try to reach localhost:port - returns True if server responds."""
         import time
         import urllib.request
         import urllib.error
@@ -659,19 +869,7 @@ class TaskExecutor:
 
     def cleanup_background(self):
         """Stop any background server processes started during execution."""
-        if not hasattr(self, '_background_processes'):
-            return
-        for proc in self._background_processes:
-            try:
-                proc.terminate()
-                proc.wait(timeout=5)
-                print(f"  🛑 Stopped background process (PID {proc.pid})")
-            except Exception:
-                try:
-                    proc.kill()
-                except Exception:
-                    pass
-        self._background_processes.clear()
+        self._process_manager.stop_all()
 
     # ── Self-Correction ─────────────────────────────────────────────
 
@@ -691,6 +889,7 @@ class TaskExecutor:
                 f"```\n{error}\n```\n\n"
                 f"Repository context:\n{context}\n\n"
                 f"Fix the code. Output ONLY the complete fixed source code."
+                f"{self._gather_diagnostics(error)}"
             )},
         ]
 
@@ -703,12 +902,71 @@ class TaskExecutor:
             code = code.rsplit("```", 1)[0]
         return code
 
+    def _gather_diagnostics(self, error: str) -> str:
+        """Run inspectors based on error keywords."""
+        diagnostics = []
+        error_lower = error.lower()
+        
+        # Docker checks
+        if any(w in error_lower for w in ['docker', 'container', 'connection refused', 'dial tcp']):
+            try:
+                # List containers to see status
+                containers = self.docker_inspector.list_containers()
+                diagnostics.append(f"Docker Containers:\n{json.dumps(containers, indent=2)}")
+                
+                # If a specific service is mentioned, get logs
+                for service in ['db', 'database', 'postgres', 'mysql', 'redis', 'app', 'server']:
+                    if service in error_lower:
+                         # Find container ID by name/image
+                         cid = next((c['id'] for c in containers if service in c['names'][0].lower() or service in c['image'].lower()), None)
+                         if cid:
+                             logs = self.docker_inspector.get_logs(cid, tail=50)
+                             diagnostics.append(f"Logs for {service} ({cid}):\n{logs}")
+            except Exception as e:
+                diagnostics.append(f"Docker inspection failed: {e}")
+
+        # DB checks
+        if any(w in error_lower for w in ['postgres', 'mysql', 'sqlite', 'db', '5432', '3306', 'relation', 'table']):
+             try:
+                 tables = self.db_inspector.inspect_tables()
+                 diagnostics.append(f"DB Tables detected:\n{tables}")
+             except Exception as e:
+                 diagnostics.append(f"DB inspection failed: {e}")
+
+        # Doc checks
+        if any(w in error_lower for w in ['importerror', 'modulenotfounderror', 'attributeerror', 'nameerror', 'typeerror']):
+            try:
+                # Only if we suspect a library issue
+                diag_msg = self.doc_crawler.diagnose_error(error)
+                diagnostics.append(diag_msg)
+            except Exception as e:
+                diagnostics.append(f"DocCrawler failed: {e}")
+                 
+        if diagnostics:
+            return "\n\n=== Auto-Diagnostics ===\n" + "\n".join(diagnostics)
+        return ""
+
+    def _ask_for_help(self, task: str, error: str) -> str:
+        """When stuck, ask the user for help."""
+        messages = [
+            {"role": "system", "content": HELP_SYSTEM_PROMPT},
+            {"role": "user", "content": f"Task: {task}\nError: {error}\n\nAsk for help:"},
+        ]
+        try:
+            result = self._provider.complete(messages)
+            question = result.content.strip()
+            print(f"\n❓ I'm stuck and need your help:\n   {question}")
+            print(f"   (You can reply in the chat or fix the issue manually)")
+            return question
+        except Exception:
+            return "I'm stuck. Please check the logs."
+
     def _identify_error_file(self, error_text: str,
                              plan: ExecutionPlan) -> Optional[FileAction]:
         """Parse error output to find which planned file caused the error.
 
         Uses known patterns as fast-path, then a universal catch-all that
-        matches ANY 'file.ext:lineN' format — works for every language.
+        matches ANY 'file.ext:lineN' format - works for every language.
         """
         import re as _re
 
@@ -735,7 +993,7 @@ class TaskExecutor:
             r'([\w./-]+\.\w{1,10}):\d+'
         )
 
-        # Collect all referenced files — known patterns first, then universal
+        # Collect all referenced files - known patterns first, then universal
         referenced_files = []
         for pattern in known_patterns:
             matches = pattern.findall(error_text)
@@ -768,6 +1026,7 @@ class TaskExecutor:
 
     # ── Full Agentic Loop ───────────────────────────────────────────
 
+
     def execute(self, task: str) -> ExecutionPlan:
         """
         Full agentic loop with hardened execution:
@@ -785,19 +1044,28 @@ class TaskExecutor:
         from agent.verification.verification_pipeline import VerificationPipeline, VerifyTier
         from agent.planning.plan_enforcer import PlanEnforcer
 
-        # ── Step 0: Arm kill switch ──
-        kill_switch = KillSwitch(timeout_seconds=15 * 60)
+        # ── Step 0: Arm kill switch (adaptive) ──
+        # Use detected stack (if any) or default
+        stack_name = self._detect_stack(task).name
+        kill_switch = KillSwitch.for_stack(stack_name)
         kill_switch.arm()
-        print("  🛡️  Kill switch armed (15m timeout)")
+        timeout_min = kill_switch.timeout_seconds / 60
+        print(f"  🛡️  Kill switch armed ({timeout_min:.0f}m timeout for '{stack_name}')")
 
         try:
-            return self._execute_inner(
+            plan = self._execute_inner(
                 task, kill_switch,
                 PlanEnvelopeValidator, SupplyChainChecker,
                 TaskIsolation, SecretsPolicy,
                 BoundedLSPLoop, VerificationPipeline, VerifyTier,
                 PlanEnforcer,
             )
+            
+            # Update memory on success
+            if self.last_run_success:
+                 Thread(target=self._memory.update, args=(task, plan.summary)).start()
+                 
+            return plan
         finally:
             kill_switch.disarm()
             self.cleanup_background()
@@ -826,7 +1094,7 @@ class TaskExecutor:
             print(f"🔨 Compile: {plan.compile_command}")
         print(f"📂 Files ({len(plan.files)}):")
         for f in plan.files:
-            print(f"   [{f.action.upper()}] {f.path} — {f.description}")
+            print(f"   [{f.action.upper()}] {f.path} - {f.description}")
         if plan.run_command:
             print(f"🏃 Run: {plan.run_command}")
         if plan.run_commands:
@@ -942,6 +1210,7 @@ class TaskExecutor:
             self._write_file(file_action, code)
             lines = len(code.split('\n'))
             print(f"  ✅ Wrote: {file_action.path} ({lines} lines)")
+            kill_switch.heartbeat()  # Keep alive during long code gen
 
         # ── Step 6: Lint / Syntax check ──
         print(f"\n🔍 Syntax/lint check...")
@@ -982,10 +1251,14 @@ class TaskExecutor:
         else:
             print(f"  ⏭️  No lint command configured, skipping")
 
+        # ── Step 6b: Ensure .env exists ──
+        self._ensure_env_file()
+
         # ── Step 7: Install dependencies ──
         if plan.install_command:
             # Use the LLM-specified install command directly
             print(f"\n📦 Installing dependencies: {plan.install_command}")
+            kill_switch.extend(plan.install_command)  # Extend for slow installs
             dep_result = self.run_code(plan.install_command)
             if not dep_result.success:
                 print(f"\n❌ Dependency install failed. Cannot proceed.")
@@ -995,6 +1268,7 @@ class TaskExecutor:
             print(f"  ✅ Dependencies installed")
         elif plan.dependencies:
             # Fallback to pip install for Python
+            kill_switch.extend("pip install")
             dep_result = self.install_dependencies(plan.dependencies)
             if not dep_result.success:
                 print(f"\n❌ Dependency install failed. Cannot proceed.")
@@ -1005,6 +1279,7 @@ class TaskExecutor:
         # ── Step 7b: Compile (if needed) ──
         if plan.compile_command:
             print(f"\n🔨 Compiling: {plan.compile_command}")
+            kill_switch.extend(plan.compile_command)  # Extend for slow builds
             compile_result = self.run_code(plan.compile_command)
             if not compile_result.success:
                 print(f"\n❌ Compilation failed.")
@@ -1012,6 +1287,36 @@ class TaskExecutor:
                 self.last_error = f"Compilation failed: {(compile_result.stderr or compile_result.stdout)[:500]}"
                 return plan
             print(f"  ✅ Compilation successful")
+
+        # ── Step 7c: Background Processes (Databases/Backends) ──
+        if plan.background_processes:
+            print(f"\n🚀 Starting background processes...")
+            for bg_cmd in plan.background_processes:
+                kill_switch.extend(bg_cmd)
+                self._run_server(bg_cmd)
+
+        # ── Step 7d: Database Setup (Migrate/Seed) ──
+        if plan.db_migrate_command:
+            print(f"\n🔄 Running DB migrations: {plan.db_migrate_command}")
+            kill_switch.extend(plan.db_migrate_command)
+            mig_result = self.run_code(plan.db_migrate_command)
+            if not mig_result.success:
+                 print(f"\n❌ Migration failed. Cannot proceed.")
+                 self.last_run_success = False
+                 self.last_error = f"Migration failed: {(mig_result.stderr or mig_result.stdout)[:500]}"
+                 return plan
+            print(f"  ✅ Migrations passed")
+
+        if plan.db_seed_command:
+            print(f"\n🌱 Seeding database: {plan.db_seed_command}")
+            kill_switch.extend(plan.db_seed_command)
+            seed_result = self.run_code(plan.db_seed_command)
+            if not seed_result.success:
+                 print(f"\n❌ Seeding failed. Cannot proceed.")
+                 self.last_run_success = False
+                 self.last_error = f"Seeding failed: {(seed_result.stderr or seed_result.stdout)[:500]}"
+                 return plan
+            print(f"  ✅ Seeding passed")
 
         # ── Step 8: Run code ──
         commands_to_run = plan.run_commands if plan.run_commands else ([plan.run_command] if plan.run_command else [])
@@ -1021,6 +1326,7 @@ class TaskExecutor:
                 if len(commands_to_run) > 1:
                     print(f"\n📌 Step {cmd_idx + 1}/{len(commands_to_run)}")
 
+                kill_switch.extend(command)  # Extend for slow run steps
                 run_result = self.run_code(command)
 
                 # ── Step 9: Self-correction loop (only for the last/main command) ──
@@ -1049,6 +1355,21 @@ class TaskExecutor:
                         self._write_file(main_file, fixed_code)
                         lines = len(fixed_code.split('\n'))
                         print(f"  📝 Rewrote: {main_file.path} ({lines} lines)")
+                        
+                        # Re-run to verify fix
+                        kill_switch.extend(command)
+                        run_result = self.run_code(command)
+                        
+                        if run_result.success:
+                            print(f"  ✅ Fix successful!")
+                            break
+                        else:
+                             # Check if we should ask for help
+                             if attempt == MAX_FIX_ATTEMPTS:
+                                 self._ask_for_help(task, (run_result.stderr or run_result.stdout)[-2000:])
+                    else:
+                        print(f"  ⚠️  Could not identify file to fix. Retrying...")
+                        break
 
                     # Recompile if needed before re-running
                     if plan.compile_command:

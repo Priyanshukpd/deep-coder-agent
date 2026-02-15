@@ -2,19 +2,80 @@
 
 ## Summary
 
-Implemented all 7 phases of the God Mode Agent v7.5.1.1 architecture, creating **37 Python modules** with **40 files** total in the `agent/` directory.
+Built a **production-ready agentic coding assistant** with a 12-step execution pipeline, multi-stack support for any language/framework, and a hardened governance layer. The agent can plan, write, compile, run, self-correct, and verify code autonomously — from Python scripts to full-stack Docker applications.
+
+**Version:** v8.0 (Multi-Stack)
 
 ## Verification Results
 
 | Check | Result |
 |-------|--------|
+| Governance self-test | **14/14 pass** ✅ |
 | Module imports | **37/37 pass** ✅ |
 | Unit tests | **27/27 pass** ✅ |
 | Dependency graph | 28 nodes, 168 edges auto-detected |
 | Supply chain detection | Correctly flags `reqeusts` as typosquat of `requests` |
 | Express lane | Correctly gates docs-only vs code changes |
 
-## Architecture Map
+---
+
+## Core Execution Engine
+
+The heart of the agent — the 12-step agentic pipeline that handles any coding task.
+
+### Key Modules
+
+| Module | Path | Purpose |
+|--------|------|---------|
+| **TaskExecutor** | [task_executor.py](file:///Users/munishm/Documents/god-mode-agent/agent/core/task_executor.py) | 12-step pipeline: plan → code → lint → compile → run → fix → verify → commit |
+| **Chat** | [chat.py](file:///Users/munishm/Documents/god-mode-agent/agent/core/chat.py) | Conversational interface with task routing |
+| **StackProfiles** | [stack_profiles.py](file:///Users/munishm/Documents/god-mode-agent/agent/core/stack_profiles.py) | 8 stack profiles (Python, Java, Node, Go, Rust, Dart, Docker, Generic) |
+| **LLM Provider** | [llm_provider.py](file:///Users/munishm/Documents/god-mode-agent/agent/llm_provider.py) | Together AI integration |
+| **Web UI** | [web_ui.py](file:///Users/munishm/Documents/god-mode-agent/agent/web_ui.py) | Streamlit chat interface |
+| **CLI** | [cli.py](file:///Users/munishm/Documents/god-mode-agent/agent/cli.py) | Command-line interface + self-test runner |
+
+### Execution Pipeline (12 Steps)
+
+```
+Step 0b → Detect Stack (task keywords + repo analysis)
+Step 1  → Generate Plan (LLM → install/compile/lint/run/test commands)
+Step 1b → Runtime Pre-Check (shutil.which → java? node? docker?)
+Step 2  → Freeze Plan Envelope (SHA256 scope lock)
+Step 3  → Supply Chain Check (dependency safety scan)
+Step 4  → Task Isolation (git checkout -b agent/task-id)
+Step 5  → Generate Code (LLM per file → secrets scan → write)
+Step 6  → Lint / Syntax (LSP for Python, subprocess for others)
+Step 7  → Install Deps + Compile
+Step 8  → Run Code (smart timeouts, server detection, multi-step)
+Step 9  → Self-Correction (universal error detection → LLM fix → recompile → re-run, max 3)
+Step 10 → Verification Pipeline (syntax → unit → integration)
+Step 11 → Plan Enforcement (no unplanned files)
+Step 12 → Auto-Git Commit ([god-mode-agent] summary)
+```
+
+### Smart Command Execution
+
+| Feature | How it works |
+|---------|-------------|
+| **Smart timeouts** | Docker=60m, Java/Rust=45m, default=30m (adaptive) |
+| **Adaptive Kill Switch** | `heartbeat()` extends deadline during activity, `extend()` adds time for slow builds |
+| **Real-Time Logs** | Output streamed line-by-line via `ProcessManager` (no more silent builds) |
+| **Parallel Processes** | Backend + Frontend running simultaneously (background Popen) |
+| **DB Lifecycle** | Auto-detects migrations/seeds → runs before main app |
+| **.env Handling** | Generates safe `.env` from `.env.example` if missing |
+| **Server detection** | `flask run`, `npm start`, etc. → background Popen |
+| **Health check** | Auto-detect port + ping `localhost:PORT` with retries |
+| **Multi-step commands** | `run_commands[]` array → sequential execution |
+| **Universal error parsing** | Known patterns (Python/Java/Node/Rust/Dart) + catch-all `file.ext:lineN` for any language |
+| **Runtime pre-check** | Verify `java`, `node`, `docker`, etc. exist before executing |
+| **Auto-git commit** | On success → `git add` + `commit "[god-mode-agent] ..."` |
+| **Background cleanup** | All Popen processes terminated in `finally` block |
+
+---
+
+## Governance Layer (37 Modules)
+
+### Architecture Map
 
 ```mermaid
 graph TD
@@ -77,8 +138,6 @@ graph TD
     end
 ```
 
-## Modules by Phase
-
 ### Phase 1: Core Control (10 modules)
 | Module | Purpose |
 |--------|---------|
@@ -98,7 +157,7 @@ graph TD
 |--------|---------|
 | [task_isolation.py](file:///Users/munishm/Documents/god-mode-agent/agent/task_isolation.py) | Atomic branching + clean tree assertion |
 | [plan_envelope.py](file:///Users/munishm/Documents/god-mode-agent/agent/plan_envelope.py) | Input snapshot hashing + scope enforcement |
-| [kill_switch.py](file:///Users/munishm/Documents/god-mode-agent/agent/kill_switch.py) | SIGINT/SIGTERM + 15m timeout + stale branch |
+| [kill_switch.py](file:///Users/munishm/Documents/god-mode-agent/agent/kill_switch.py) | Adaptive timeouts (stack-aware) + emergency halt |
 | [network_policy.py](file:///Users/munishm/Documents/god-mode-agent/agent/network_policy.py) | Block network commands during IMPLEMENTING |
 | [merge_guard.py](file:///Users/munishm/Documents/god-mode-agent/agent/merge_guard.py) | 4 CI binding guards §2.E |
 | [rollback.py](file:///Users/munishm/Documents/god-mode-agent/agent/rollback.py) | 3-domain atomic git reset |
@@ -143,3 +202,18 @@ graph TD
 |--------|---------|
 | [code_search.py](file:///Users/munishm/Documents/god-mode-agent/agent/code_search.py) | ripgrep + ChromaDB semantic search |
 | [docs_rag.py](file:///Users/munishm/Documents/god-mode-agent/agent/docs_rag.py) | External docs RAG with chunking |
+
+---
+
+## Security Layers
+
+| Layer | Module | Protection |
+|-------|--------|------------|
+| Kill Switch | `kill_switch.py` | Emergency halt at any pipeline step |
+| Command Safety | `command_safety.py` | SAFE / NETWORK / BLOCK tier classification |
+| RBAC | `rbac.py` | DEVELOPER / ARCHITECT / ADMIN permissions |
+| Secrets Policy | `secrets_policy.py` | Regex detection + auto-redaction before write |
+| Supply Chain | `supply_chain.py` | Typosquatting detection via Levenshtein distance |
+| Plan Envelope | `plan_envelope.py` | Immutable scope — no unplanned file writes |
+| Task Isolation | `task_isolation.py` | Git branch per task — rollback on failure |
+| Runtime Pre-Check | `task_executor.py` | Verify tools exist before executing commands |
