@@ -66,6 +66,10 @@ class ExecutionPlan:
     dependencies: list[str] = field(default_factory=list)
     run_command: str = ""
     test_command: str = ""
+    install_command: str = ""      # e.g. "pip install", "npm install", "mvn install"
+    compile_command: str = ""      # e.g. "javac *.java", "go build", "cargo build"
+    lint_command: str = ""         # e.g. "python -m py_compile", "go vet ./..."
+    stack: str = ""                # detected stack name e.g. "python", "java"
 
 
 PLAN_SYSTEM_PROMPT = """You are a senior software engineer. You are given a task and context about a repository.
@@ -73,10 +77,14 @@ PLAN_SYSTEM_PROMPT = """You are a senior software engineer. You are given a task
 Your job is to create a detailed execution plan as a JSON object with this schema:
 {
   "summary": "Brief description of what you'll do",
-  "dependencies": ["list", "of", "pip", "packages", "needed"],
+  "stack": "python",
+  "dependencies": ["list", "of", "packages", "needed"],
+  "install_command": "pip install -q <deps>",
+  "compile_command": "",
+  "lint_command": "python -m py_compile <file>",
   "files": [
     {
-      "path": "relative/path/to/file.py",
+      "path": "relative/path/to/file",
       "action": "create",
       "description": "What this file does"
     }
@@ -90,23 +98,29 @@ Rules:
 - Use relative paths from the repo root
 - action must be "create", "modify", or "delete"
 - Be specific about what each file does
-- List ALL pip dependencies needed
-- run_command: the shell command to run/verify the main code works (e.g. 'python script.py')
-- test_command: command to run tests (leave empty string if no tests exist)"""
+- stack: the primary technology (python, java, node, go, rust, dart, docker, etc.)
+- dependencies: list ALL packages/libraries needed
+- install_command: FULL shell command to install dependencies (e.g. 'pip install torch transformers', 'npm install express cors', 'go mod tidy', or empty string if none needed)
+- compile_command: shell command to compile if needed (e.g. 'javac -cp . Main.java', 'go build', 'cargo build') or empty string
+- lint_command: shell command to check syntax (e.g. 'python -m py_compile file.py', 'javac -Xlint:all File.java', 'npx tsc --noEmit') or empty string
+- run_command: the shell command to run/verify the code works (e.g. 'python main.py', 'java Main', 'node index.js', 'go run main.go', 'docker-compose up --build')
+- test_command: command to run tests (leave empty string if no tests exist)
+- You can use ANY language or framework (Python, Java, Node.js, Go, Rust, Flutter, React, Django, Flask, FastAPI, Spring Boot, Express, Docker, etc.)
+- Choose the best technology for the task if not specified"""
 
 
-CODE_SYSTEM_PROMPT = """You are a senior software engineer. Generate production-quality Python code.
+CODE_SYSTEM_PROMPT_TEMPLATE = """You are a senior software engineer. Generate production-quality {language} code.
 
 Rules:
-- Output ONLY the raw Python code, no markdown fences, no explanation
-- Include comprehensive docstrings and comments
-- Include proper imports
+- Output ONLY the raw source code, no markdown fences, no explanation
+- Include comprehensive comments and documentation
+- Include proper imports/includes
 - Include proper error handling
 - Make the code runnable end-to-end
-- Follow best practices for the libraries used"""
+- Follow best practices for the language and libraries used"""
 
 
-FIX_SYSTEM_PROMPT = """You are a senior software engineer debugging code.
+FIX_SYSTEM_PROMPT_TEMPLATE = """You are a senior software engineer debugging {language} code.
 
 You are given:
 1. The original task
@@ -116,7 +130,7 @@ You are given:
 Your job is to output the COMPLETE FIXED code for the file.
 
 Rules:
-- Output ONLY the raw Python code, no markdown fences, no explanation
+- Output ONLY the raw source code, no markdown fences, no explanation
 - Fix the root cause, not just the symptom
 - Keep all existing functionality
 - The code must be runnable end-to-end"""
@@ -139,10 +153,34 @@ class TaskExecutor:
         self.fix_attempts_used = 0
         self.last_run_success = True
         self.last_error: Optional[str] = None
+        self._stack_profile = None  # Set during execute()
 
     def set_rollback_manager(self, mgr):
         """Attach a rollback manager that backs up files before writes."""
         self._rollback_mgr = mgr
+
+    def _detect_stack(self, task: str):
+        """Detect the technology stack from the task + repo."""
+        from agent.core.stack_profiles import (
+            detect_profile_from_task, detect_profile_from_stack, PYTHON, GENERIC
+        )
+        # Try task-based detection first
+        profile = detect_profile_from_task(task)
+        if profile:
+            return profile
+        # Then try repo-based detection
+        try:
+            from agent.planning.repo_discovery import RepoDiscovery
+            discovery = RepoDiscovery(self._repo_path)
+            repo_map = discovery.scan()
+            if repo_map.stack and repo_map.stack.primary_language:
+                return detect_profile_from_stack(
+                    repo_map.stack.primary_language,
+                    repo_map.stack.frameworks
+                )
+        except Exception:
+            pass
+        return PYTHON  # Safe default
 
     def _read_repo_context(self) -> str:
         """Read the repo structure and key files for context."""
@@ -171,8 +209,12 @@ class TaskExecutor:
                     continue
 
                 ext = os.path.splitext(f)[1].lower()
-                if ext in ('.py', '.toml', '.yaml', '.yml', '.json', '.md', '.txt',
-                           '.cfg', '.ini', '.sh', '.env'):
+                # Use stack profile extensions, or fall back to common set
+                read_exts = ('.py', '.toml', '.yaml', '.yml', '.json', '.md', '.txt',
+                             '.cfg', '.ini', '.sh', '.env')
+                if self._stack_profile and self._stack_profile.file_read_extensions:
+                    read_exts = self._stack_profile.file_read_extensions
+                if ext in read_exts:
                     try:
                         with open(fpath, 'r', errors='replace') as fh:
                             content = fh.read()
@@ -212,6 +254,10 @@ class TaskExecutor:
             dependencies=plan_data.get("dependencies", []),
             run_command=plan_data.get("run_command", ""),
             test_command=plan_data.get("test_command", ""),
+            install_command=plan_data.get("install_command", ""),
+            compile_command=plan_data.get("compile_command", ""),
+            lint_command=plan_data.get("lint_command", ""),
+            stack=plan_data.get("stack", "python"),
         )
 
         for f in plan_data.get("files", []):
@@ -244,7 +290,9 @@ class TaskExecutor:
                 pass
 
         messages = [
-            {"role": "system", "content": CODE_SYSTEM_PROMPT},
+            {"role": "system", "content": CODE_SYSTEM_PROMPT_TEMPLATE.format(
+                language=self._stack_profile.code_prompt_language if self._stack_profile else "Python"
+            )},
             {"role": "user", "content": (
                 f"Task: {task}\n\n{plan_summary}\n"
                 f"Now generate the COMPLETE code for: {file_action.path}\n"
@@ -309,19 +357,104 @@ class TaskExecutor:
             print(f"  ⏰ Install timed out")
             return RunResult(False, "", "Install timed out (300s)", -1, cmd_str)
 
+    # ── Smart Timeout Detection ───────────────────────────────────
+
+    @staticmethod
+    def _smart_timeout(command: str) -> int:
+        """
+        Pick a timeout based on what the command looks like.
+        Long-running build tools get more time. Quick scripts get less.
+        """
+        cmd_lower = command.lower()
+
+        # Docker builds can take minutes
+        if any(kw in cmd_lower for kw in ['docker build', 'docker-compose',
+                                           'docker compose']):
+            return 600  # 10 min
+
+        # Heavy build tools
+        if any(kw in cmd_lower for kw in ['mvn ', 'gradle ', 'cargo build',
+                                           'flutter build', 'npm run build',
+                                           'yarn build', 'go build']):
+            return 300  # 5 min
+
+        # Package installs
+        if any(kw in cmd_lower for kw in ['npm install', 'yarn install',
+                                           'pip install', 'go mod tidy',
+                                           'bundle install', 'cargo install',
+                                           'composer install', 'flutter pub get',
+                                           'pnpm install']):
+            return 300  # 5 min
+
+        # Database migrations / SQL
+        if any(kw in cmd_lower for kw in ['migrate', 'alembic', 'flyway',
+                                           'liquibase', 'prisma',
+                                           'sequelize', 'knex']):
+            return 120  # 2 min
+
+        # Tests can be slow
+        if any(kw in cmd_lower for kw in ['pytest', 'jest', 'mocha',
+                                           'mvn test', 'go test', 'cargo test',
+                                           'npm test', 'flutter test']):
+            return 180  # 3 min
+
+        return 120  # Default: 2 min
+
+    @staticmethod
+    def _is_server_command(command: str) -> bool:
+        """
+        Detect if a command starts a long-running server/daemon.
+        These should NOT block — we start, health check, then move on.
+        """
+        cmd_lower = command.lower()
+        return any(kw in cmd_lower for kw in [
+            'flask run', 'uvicorn ', 'gunicorn ', 'hypercorn ',
+            'streamlit run', 'chainlit run', 'gradio',
+            'npm start', 'npm run dev', 'npm run serve',
+            'yarn start', 'yarn dev', 'pnpm dev',
+            'next dev', 'vite', 'ng serve',
+            'python manage.py runserver', 'python -m http.server',
+            'java -jar', 'spring-boot:run',
+            'docker-compose up', 'docker compose up',
+            'go run', 'cargo run',
+            'node server', 'node app', 'node index',
+        ])
+
     # ── Code Execution ──────────────────────────────────────────────
 
     def run_code(self, command: str) -> RunResult:
-        """Run a command in the repo directory and capture output."""
+        """
+        Run a command in the repo directory and capture output.
+
+        Handles:
+        - Smart timeouts based on command type (Docker=10m, build=5m, etc.)
+        - Server/daemon detection → start with Popen, health check, move on
+        - Multi-command sequences (&&, ;)
+        - Graceful cleanup on timeout
+        - Any language/framework/shell command
+        """
         if not command:
             return RunResult(True, "", "", 0, "")
 
         print(f"\n🏃 Running: {command}")
 
+        # Check if this is a long-running server
+        if self._is_server_command(command):
+            return self._run_server(command)
+
+        # Smart timeout
+        timeout = self._smart_timeout(command)
+        if timeout != 120:
+            print(f"  ⏱️  Timeout: {timeout}s (auto-detected)")
+
         try:
+            # Use environment that inherits everything + adds repo to PATH
+            env = os.environ.copy()
+            env['PATH'] = self._repo_path + os.pathsep + env.get('PATH', '')
+
             result = subprocess.run(
                 command, shell=True, capture_output=True, text=True,
-                timeout=120, cwd=self._repo_path,
+                timeout=timeout, cwd=self._repo_path, env=env,
             )
             success = result.returncode == 0
 
@@ -339,8 +472,77 @@ class TaskExecutor:
             return RunResult(success, result.stdout, result.stderr,
                              result.returncode, command)
         except subprocess.TimeoutExpired:
-            print(f"  ⏰ Timed out (120s)")
-            return RunResult(False, "", "Command timed out after 120s", -1, command)
+            print(f"  ⏰ Timed out ({timeout}s)")
+            return RunResult(False, "", f"Command timed out after {timeout}s", -1, command)
+        except OSError as e:
+            # Handle "command not found" type errors gracefully
+            print(f"  ❌ OS error: {e}")
+            return RunResult(False, "", str(e), -1, command)
+
+    def _run_server(self, command: str) -> RunResult:
+        """
+        Start a long-running server process in the background.
+        Wait briefly for startup, check if it's running, then return success.
+        """
+        import time
+
+        print(f"  🌐 Detected server command — starting in background...")
+
+        try:
+            env = os.environ.copy()
+            env['PATH'] = self._repo_path + os.pathsep + env.get('PATH', '')
+
+            process = subprocess.Popen(
+                command, shell=True,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                text=True, cwd=self._repo_path, env=env,
+            )
+
+            # Give it a few seconds to start (or crash)
+            time.sleep(3)
+
+            # Check if it crashed immediately
+            poll = process.poll()
+            if poll is not None:
+                # Process already exited — grab output
+                stdout, stderr = process.communicate(timeout=5)
+                print(f"  ❌ Server exited immediately (code {poll})")
+                error_text = (stderr or stdout).strip()
+                for line in error_text.split('\n')[-10:]:
+                    print(f"     {line}")
+                return RunResult(False, stdout, stderr, poll, command)
+
+            # Process is still running — success!
+            print(f"  ✅ Server started (PID: {process.pid})")
+            print(f"  ℹ️  Running in background — will terminate after task completes")
+
+            # Store for cleanup later
+            if not hasattr(self, '_background_processes'):
+                self._background_processes = []
+            self._background_processes.append(process)
+
+            return RunResult(True, f"Server started (PID {process.pid})",
+                             "", 0, command)
+
+        except OSError as e:
+            print(f"  ❌ Failed to start server: {e}")
+            return RunResult(False, "", str(e), -1, command)
+
+    def cleanup_background(self):
+        """Stop any background server processes started during execution."""
+        if not hasattr(self, '_background_processes'):
+            return
+        for proc in self._background_processes:
+            try:
+                proc.terminate()
+                proc.wait(timeout=5)
+                print(f"  🛑 Stopped background process (PID {proc.pid})")
+            except Exception:
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+        self._background_processes.clear()
 
     # ── Self-Correction ─────────────────────────────────────────────
 
@@ -349,8 +551,9 @@ class TaskExecutor:
         """Use LLM to fix a broken file given the error output."""
         context = self._read_repo_context()
 
+        lang = self._stack_profile.code_prompt_language if self._stack_profile else "Python"
         messages = [
-            {"role": "system", "content": FIX_SYSTEM_PROMPT},
+            {"role": "system", "content": FIX_SYSTEM_PROMPT_TEMPLATE.format(language=lang)},
             {"role": "user", "content": (
                 f"Task: {task}\n\nFile: {file_action.path}\n"
                 f"Description: {file_action.description}\n\n"
@@ -358,7 +561,7 @@ class TaskExecutor:
                 f"Error when running `{plan.run_command}`:\n"
                 f"```\n{error}\n```\n\n"
                 f"Repository context:\n{context}\n\n"
-                f"Fix the code. Output ONLY the complete fixed Python code."
+                f"Fix the code. Output ONLY the complete fixed source code."
             )},
         ]
 
@@ -391,9 +594,11 @@ class TaskExecutor:
             if fa.path in error_text:
                 return fa
 
-        # Last resort: first Python file in plan
+        # Last resort: first source file in plan (any extension)
+        source_exts = ('.py', '.java', '.js', '.ts', '.jsx', '.tsx', '.go',
+                       '.rs', '.dart', '.rb', '.php', '.c', '.cpp', '.cs')
         for fa in plan.files:
-            if fa.path.endswith('.py'):
+            if any(fa.path.endswith(ext) for ext in source_exts):
                 return fa
 
         return plan.files[0] if plan.files else None
@@ -432,6 +637,7 @@ class TaskExecutor:
             )
         finally:
             kill_switch.disarm()
+            self.cleanup_background()
 
     def _execute_inner(self, task, kill_switch,
                        PlanEnvelopeValidator, SupplyChainChecker,
@@ -440,12 +646,21 @@ class TaskExecutor:
                        PlanEnforcer) -> ExecutionPlan:
         """Inner execute with kill switch guard."""
 
+        # ── Step 0b: Detect stack ──
+        self._stack_profile = self._detect_stack(task)
+        print(f"  🔧 Detected stack: {self._stack_profile.display_name}")
+
         # ── Step 1: Generate plan ──
         plan = self.generate_plan(task)
 
         print(f"\n📋 Plan: {plan.summary}")
+        print(f"🏗️  Stack: {plan.stack or self._stack_profile.name}")
         if plan.dependencies:
             print(f"📦 Dependencies: {', '.join(plan.dependencies)}")
+        if plan.install_command:
+            print(f"📥 Install: {plan.install_command}")
+        if plan.compile_command:
+            print(f"🔨 Compile: {plan.compile_command}")
         print(f"📂 Files ({len(plan.files)}):")
         for f in plan.files:
             print(f"   [{f.action.upper()}] {f.path} — {f.description}")
@@ -533,33 +748,75 @@ class TaskExecutor:
             lines = len(code.split('\n'))
             print(f"  ✅ Wrote: {file_action.path} ({lines} lines)")
 
-        # ── Step 6: Lint check (Bounded LSP Loop) ──
+        # ── Step 6: Lint / Syntax check ──
         print(f"\n🔍 Syntax/lint check...")
-        lsp = BoundedLSPLoop()
-        for file_action in plan.files:
-            if file_action.action == "delete" or not file_action.path.endswith('.py'):
-                continue
-            full_path = os.path.join(self._repo_path, file_action.path)
-            lint_result = BoundedLSPLoop.run_linter(full_path)
-            if lint_result.passed:
-                print(f"  ✅ {file_action.path}: syntax OK")
-            else:
-                can_continue = lsp.record_result(lint_result)
-                print(f"  ⚠️  {file_action.path}: {lint_result.errors[0] if lint_result.errors else 'failed'}")
-                if not can_continue:
-                    print(f"  🛑 LSP budget exhausted — non-retryable failure")
-                    self.last_run_success = False
-                    self.last_error = f"LSP budget exhausted during linting of {file_action.path}."
-                    return plan
+        lint_cmd = plan.lint_command or (self._stack_profile.fallback_lint if self._stack_profile else None)
+        if lint_cmd:
+            for file_action in plan.files:
+                if file_action.action == "delete":
+                    continue
+                full_path = os.path.join(self._repo_path, file_action.path)
+                # For Python files, use the built-in LSP loop
+                if file_action.path.endswith('.py'):
+                    lint_result = BoundedLSPLoop.run_linter(full_path)
+                    if lint_result.passed:
+                        print(f"  ✅ {file_action.path}: syntax OK")
+                    else:
+                        lsp = BoundedLSPLoop()
+                        can_continue = lsp.record_result(lint_result)
+                        print(f"  ⚠️  {file_action.path}: {lint_result.errors[0] if lint_result.errors else 'failed'}")
+                        if not can_continue:
+                            print(f"  🛑 LSP budget exhausted")
+                            self.last_run_success = False
+                            self.last_error = f"LSP budget exhausted during linting of {file_action.path}."
+                            return plan
+                else:
+                    # For non-Python, run the lint command as a subprocess
+                    try:
+                        file_lint_cmd = lint_cmd.replace('<file>', full_path)
+                        result = subprocess.run(
+                            file_lint_cmd, shell=True, capture_output=True,
+                            text=True, timeout=30, cwd=self._repo_path,
+                        )
+                        if result.returncode == 0:
+                            print(f"  ✅ {file_action.path}: syntax OK")
+                        else:
+                            print(f"  ⚠️  {file_action.path}: {(result.stderr or result.stdout)[:200]}")
+                    except Exception as e:
+                        print(f"  ⚠️  Lint skipped for {file_action.path}: {e}")
+        else:
+            print(f"  ⏭️  No lint command configured, skipping")
 
         # ── Step 7: Install dependencies ──
-        if plan.dependencies:
+        if plan.install_command:
+            # Use the LLM-specified install command directly
+            print(f"\n📦 Installing dependencies: {plan.install_command}")
+            dep_result = self.run_code(plan.install_command)
+            if not dep_result.success:
+                print(f"\n❌ Dependency install failed. Cannot proceed.")
+                self.last_run_success = False
+                self.last_error = f"Dependency installation failed: {(dep_result.stderr or dep_result.stdout)[:500]}"
+                return plan
+            print(f"  ✅ Dependencies installed")
+        elif plan.dependencies:
+            # Fallback to pip install for Python
             dep_result = self.install_dependencies(plan.dependencies)
             if not dep_result.success:
                 print(f"\n❌ Dependency install failed. Cannot proceed.")
                 self.last_run_success = False
                 self.last_error = f"Dependency installation failed: {dep_result.stderr[:500]}"
                 return plan
+
+        # ── Step 7b: Compile (if needed) ──
+        if plan.compile_command:
+            print(f"\n🔨 Compiling: {plan.compile_command}")
+            compile_result = self.run_code(plan.compile_command)
+            if not compile_result.success:
+                print(f"\n❌ Compilation failed.")
+                self.last_run_success = False
+                self.last_error = f"Compilation failed: {(compile_result.stderr or compile_result.stdout)[:500]}"
+                return plan
+            print(f"  ✅ Compilation successful")
 
         # ── Step 8: Run code ──
         if plan.run_command:
@@ -612,15 +869,19 @@ class TaskExecutor:
         print(f"\n🧪 Running verification pipeline...")
         skip = [VerifyTier.INTEGRATION_TEST, VerifyTier.CI_GATE]
         if not plan.test_command:
-            skip.append(VerifyTier.UNIT_TEST)  # Skip if no tests configured
+            skip.append(VerifyTier.UNIT_TEST)
         pipeline = VerificationPipeline(
             project_dir=self._repo_path,
-            test_command=plan.test_command or "python -m pytest tests/ -v",
+            test_command=plan.test_command or "echo 'No test command configured'",
             skip_tiers=skip,
         )
-        py_files = [f.path for f in plan.files
-                    if f.path.endswith('.py') and f.action != "delete"]
-        report = pipeline.run(files=py_files)
+        # Collect all source files (not just .py)
+        source_exts = ('.py', '.java', '.js', '.ts', '.jsx', '.tsx', '.go',
+                       '.rs', '.dart', '.rb', '.php', '.c', '.cpp')
+        source_files = [f.path for f in plan.files
+                        if any(f.path.endswith(ext) for ext in source_exts)
+                        and f.action != "delete"]
+        report = pipeline.run(files=source_files)
         print(report.summary())
 
         if not report.all_passed:

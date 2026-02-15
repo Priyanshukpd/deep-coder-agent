@@ -27,6 +27,7 @@ logger = logging.getLogger(__name__)
 
 CHAT_SYSTEM_PROMPT = """You are God Mode Agent — a senior software engineer AI assistant.
 You are working in a repository and helping the user with coding tasks through a persistent chat.
+You can work with ANY programming language or framework: Python, Java, Node.js, Go, Rust, Flutter, React, Django, Flask, FastAPI, Spring Boot, Express, Docker, and more.
 
 IMPORTANT: You must decide how to respond to each user message. Respond with a JSON block:
 
@@ -45,6 +46,7 @@ Guidelines:
 - Use "ACTION" mode when the user wants you to write/change/fix code or run something
 - In ACTION mode, still provide a "message" explaining what you're about to do
 - The "task" in ACTION should be a clear, specific instruction for code generation
+- Include the target language/framework in the task if the user specifies one
 - If the user's request is vague, use CHAT mode to ask for clarification
 - Reference previous conversation context when relevant
 - Keep messages concise and helpful
@@ -290,6 +292,10 @@ class ChatSession:
         lines.append(f"### ✅ Task Complete\n")
         lines.append(f"**{plan.summary}**\n")
 
+        # Stack info
+        stack_name = plan.stack or "python"
+        lines.append(f"🏗️ **Stack:** {stack_name}\n")
+
         # Files edited section
         lines.append("#### 📁 Files Edited")
         for f in plan.files:
@@ -304,6 +310,8 @@ class ChatSession:
         lines.append(f"2. ✅ Code written ({len(plan.files)} file(s))")
         if plan.dependencies:
             lines.append(f"3. ✅ Dependencies installed: `{', '.join(plan.dependencies)}`")
+        if plan.compile_command:
+            lines.append(f"3b. ✅ Compiled successfully")
         if plan.run_command:
             if executor.fix_attempts_used > 0:
                 lines.append(f"4. ✅ Code executed (after {executor.fix_attempts_used} fix attempt(s))")
