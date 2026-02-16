@@ -32,6 +32,17 @@ class DependencyCheck:
     edit_distance: int = 0
 
 
+# Standard Python Libraries (utility constant)
+STANDARD_PYTHON_LIBRARIES = {
+    "os", "sys", "shutil", "pathlib", "json", "re", "datetime", "math", "random",
+    "time", "uuid", "logging", "argparse", "subprocess", "threading", "multiprocessing",
+    "collections", "itertools", "functools", "tempfile", "glob", "fnmatch", "io",
+    "abc", "ast", "asyncio", "base64", "bisect", "copy", "csv", "decimal", "enum",
+    "hashlib", "inspect", "operator", "pickle", "queue", "select", "shlex", "socket",
+    "sqlite3", "ssl", "statistics", "struct", "tarfile", "traceback", "types",
+    "typing", "unittest", "urllib", "xml", "zipfile", 
+}
+
 # Well-known Python packages (for typosquatting detection)
 KNOWN_PYTHON_PACKAGES = {
     "requests", "flask", "django", "numpy", "pandas",

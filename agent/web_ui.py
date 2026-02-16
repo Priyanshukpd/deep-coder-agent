@@ -154,6 +154,30 @@ with st.sidebar:
     st.divider()
     
     st.subheader("📂 Repository")
+    new_repo_path = st.text_input(
+        "Target Path",
+        value=session._repo_path,
+        help="Paste the absolute path to a different repository to switch context."
+    )
+    
+    if new_repo_path != session._repo_path:
+        # Validate path
+        abs_new_path = os.path.abspath(new_repo_path)
+        if os.path.exists(abs_new_path) and os.path.isdir(abs_new_path):
+            with st.spinner(f"🔄 Switching to: {abs_new_path}..."):
+                # Create a new session with the same provider
+                new_session = ChatSession(session._provider, abs_new_path)
+                new_session._load_repo_context()
+                
+                # Update session state
+                st.session_state.session = new_session
+                # Optionally clear messages or keep them? Usually better to clear for new context
+                st.session_state.messages = [] 
+                st.success(f"Context switched to {os.path.basename(abs_new_path)}")
+                st.rerun()
+        else:
+            st.error("Invalid directory path.")
+    
     st.code(session._repo_path, language="bash")
     
     # Extract stats from repo context if available
@@ -175,8 +199,29 @@ with st.sidebar:
     st.divider()
     
     st.subheader("📊 Session Stats")
-    st.metric("Turns", session._turn_count)
-    st.metric("LLM Calls", session._provider.call_count)
+    col1, col2 = st.columns(2)
+    with col1:
+        st.metric("Turns", session._turn_count)
+    with col2:
+        st.metric("LLM Calls", session._provider.call_count)
+    
+    st.divider()
+    
+    st.subheader("🎛️ Control Mode")
+    mode_options = ["🚀 Auto (God Mode)", "✋ Interactive (Co-pilot)"]
+    default_index = 1 if session.interactive_mode else 0
+    selected_mode = st.radio(
+        "Execution Strategy",
+        options=mode_options,
+        index=default_index,
+        help="Auto: Agent executes autonomously. Interactive: Agent asks for approval before each step."
+    )
+    
+    # Sync UI selection to session state
+    new_interactive = (selected_mode == mode_options[1])
+    if new_interactive != session.interactive_mode:
+        session.interactive_mode = new_interactive
+        st.toast(f"Switched to {'Interactive' if new_interactive else 'Auto'} mode")
     
     # Token usage
     provider = session._provider

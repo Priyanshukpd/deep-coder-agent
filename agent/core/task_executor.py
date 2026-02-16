@@ -40,6 +40,7 @@ logger = logging.getLogger(__name__)
 
 from agent.core.process_manager import ProcessManager, ProcessInfo
 from agent.planning.memory import ArchitectureMemory
+from agent.tools.security_advisor import SecurityAdvisor
 
 MAX_FIX_ATTEMPTS = 3
 
@@ -697,13 +698,18 @@ class TaskExecutor:
     # ── Dependency Installation ─────────────────────────────────────
 
     def install_dependencies(self, dependencies: list[str]) -> RunResult:
-        """Install pip dependencies."""
-        if not dependencies:
+        from agent.security.supply_chain import STANDARD_PYTHON_LIBRARIES
+        
+        # Filter out built-in standard libraries
+        third_party_deps = [d for d in dependencies if d.lower() not in STANDARD_PYTHON_LIBRARIES]
+        
+        if not third_party_deps:
+            print(f"  ✅ No third-party dependencies to install")
             return RunResult(True, "", "", 0, "")
 
-        cmd = [sys.executable, "-m", "pip", "install", "-q"] + dependencies
+        cmd = [sys.executable, "-m", "pip", "install", "-q"] + third_party_deps
         cmd_str = " ".join(cmd)
-        print(f"\n📦 Installing: {' '.join(dependencies)}")
+        print(f"\n📦 Installing: {' '.join(third_party_deps)}")
 
         try:
             result = subprocess.run(
@@ -1282,12 +1288,29 @@ class TaskExecutor:
             checker = SupplyChainChecker()
             results = checker.check_dependencies(plan.dependencies)
             suspicious = [r for r in results if r.is_suspicious]
+            
             if suspicious:
-                print(f"  ⚠️  {len(suspicious)} suspicious dependencies found:")
+                advisor = SecurityAdvisor(self._provider)
+                revalidated_suspicious = []
+                
                 for s in suspicious:
-                    print(f"     ❌ {s.name}: {s.reason}")
-                self.last_run_success = False
-                return plan
+                    advice = advisor.advise(
+                        package=s.name,
+                        heuristic_reason=s.reason,
+                        task=task,
+                        stack=plan.stack
+                    )
+                    
+                    if advice.decision == "SAFE":
+                        print(f"  🛡️  Advisor: '{s.name}' is SAFE ({advice.reasoning})")
+                    else:
+                        print(f"  ❌ {s.name}: {s.reason} — Advisor confirms: {advice.decision} ({advice.reasoning})")
+                        revalidated_suspicious.append(s)
+                
+                if revalidated_suspicious:
+                    print(f"  ⚠️  {len(revalidated_suspicious)} suspicious dependencies found.")
+                    self.last_run_success = False
+                    return plan
             else:
                 print(f"  ✅ All {len(results)} dependencies look clean")
 
@@ -1565,7 +1588,7 @@ class TaskExecutor:
             failed_output = ""
             for res in report.results:
                 if not res.passed:
-                    failed_output = f"Test failed for {res.test_file}:\n{res.output}\n"
+                    failed_output = f"Verification failed at {res.tier.name}:\n" + "\n".join(res.errors) + "\n"
                     break # Focus on first error
             
             if not failed_output:
