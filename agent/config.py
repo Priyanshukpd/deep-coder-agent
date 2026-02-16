@@ -23,7 +23,7 @@ class LLMConfig:
     """
 
     # Model
-    model: str = "Qwen/Qwen3-Coder-480B-A35B-Instruct-FP8"
+    model: str = field(default_factory=lambda: os.environ.get("TOGETHER_MODEL", "Qwen/Qwen3-Coder-480B-A35B-Instruct-FP8"))
 
     # Sampling — Architecture defaults (deterministic)
     temperature: float = 0.0
@@ -72,12 +72,19 @@ class AgentConfig:
     # LLM
     llm: LLMConfig = field(default_factory=LLMConfig)
 
-    # API Key (from environment)
+    # API Keys (from environment)
     together_api_key: str = field(default_factory=lambda: os.environ.get("TOGETHER_API_KEY", ""))
+    openai_api_key: str = field(default_factory=lambda: os.environ.get("OPENAI_API_KEY", "sk-placeholder"))
+    openai_base_url: str = field(default_factory=lambda: os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1"))
+    
+    # Provider selection
+    provider: str = field(default_factory=lambda: os.environ.get("AGENT_PROVIDER", "together")) # "together" or "openai"
 
     # Feature flags
     use_llm_intent: bool = True  # False = keyword heuristics fallback
 
     @property
     def has_api_key(self) -> bool:
+        if self.provider == "openai":
+            return bool(self.openai_api_key)
         return bool(self.together_api_key)

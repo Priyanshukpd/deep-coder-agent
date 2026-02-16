@@ -222,8 +222,8 @@ def run_classify(task: str):
 
     provider = None
     if config.has_api_key:
-        from agent.core.llm_provider import TogetherProvider
-        provider = TogetherProvider(config)
+        from agent.core.factory import create_provider
+        provider = create_provider(config)
         mode = "LLM"
     else:
         mode = "heuristic"
@@ -332,11 +332,11 @@ def run_full_pipeline(task: str, repo_path: str = ".", dry_run: bool = False,
         exec_log.save()
         return True
 
-    from agent.core.llm_provider import TogetherProvider
+    from agent.core.factory import create_provider
     from agent.core.task_executor import TaskExecutor
 
     print("─── Step 6: Task Execution ───")
-    provider = TogetherProvider(config)
+    provider = create_provider(config)
     executor = TaskExecutor(provider, repo_path)
 
     if dry_run:
@@ -424,10 +424,10 @@ def run_chat(repo_path: str = "."):
         print("\n⚠️  No API key configured. Set TOGETHER_API_KEY to use chat mode.")
         return
 
-    from agent.core.llm_provider import TogetherProvider
+    from agent.core.factory import create_provider
     from agent.core.chat import ChatSession
 
-    provider = TogetherProvider(config)
+    provider = create_provider(config)
     session = ChatSession(provider, repo_path)
     session.loop()
 

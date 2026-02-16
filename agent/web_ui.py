@@ -18,7 +18,7 @@ from datetime import datetime
 sys.path.append(os.path.abspath(os.getcwd()))
 
 from agent.config import AgentConfig
-from agent.core.llm_provider import TogetherProvider
+from agent.core.factory import create_provider
 from agent.core.chat import ChatSession, ChatAction
 import logging
 import io
@@ -133,7 +133,7 @@ if "session" not in st.session_state:
         st.error("⚠️ No API key configured. Set TOGETHER_API_KEY env var.")
         st.stop()
 
-    provider = TogetherProvider(config)
+    provider = create_provider(config)
     
     with st.spinner(f"📡 Scanning repository: {repo_path}..."):
         session = ChatSession(provider, repo_path)
