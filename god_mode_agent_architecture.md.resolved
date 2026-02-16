@@ -1,4 +1,4 @@
-# The "God Mode" Agent — Architecture v8.0 (Multi-Stack)
+# The "God Mode" Agent — Architecture v9.0 (Autonomous)
 
 **Philosophy:** "Boring is Reliable. Optimistic is Scalable. Precision is Mandatory."
 **Status:** **Build Target (Final)**
@@ -196,8 +196,11 @@ On successful task completion, auto-commits with `[god-mode-agent] <summary>` an
 | **CLI** | `agent/cli.py` | Command-line interface |
 | **DockerInspector** | `agent/tools/docker_inspector.py` | Container runtime analysis |
 | **DatabaseInspector** | `agent/tools/db_inspector.py` | DB schema & data verification |
-| **BrowserTester** | `agent/tools/browser_tester.py` | Headless web UI verification |
+| **BrowserTester** | `agent/tools/browser_tester.py` | Headless web UI verification (Playwright) |
 | **DocCrawler** | `agent/tools/doc_crawler.py` | External documentation fetcher |
+| **LSPTool** | `agent/tools/lsp.py` | Multi-language linting/diagnostics |
+| **VisualTool** | `agent/tools/visual.py` | Screenshot-based visual feedback |
+| **PromptManager** | `agent/core/prompt.py` | Persona-based prompt management |
 
 ---
 
@@ -228,9 +231,10 @@ Step 7b: COMPILE ──→ [plan.compile_command (javac/go build/cargo build/etc
    ↓
 Step 8:  RUN CODE ──→ [Smart timeout | Server detection → background + health check]
    ↓                   [Multi-step: run_commands[] executed in sequence]
-Step 9:  SELF-CORRECTION ──→ [Multi-language error detection → LLM fix → recompile → re-run]
+Step 9:  AUTO-HEALING ──→ [Universal error detection → LLM fix → recompile → re-run]
    ↓                         [Max 3 attempts per command]
 Step 10: VERIFICATION ──→ [Multi-tier: syntax → unit → integration]
+
    ↓
 Step 11: PLAN ENFORCEMENT ──→ [Verify no unplanned files written]
    ↓

@@ -1,112 +1,74 @@
-# Task: Build Production-Ready Dev Agent
+# Agent Improvements
 
-- [x] **Architecture Design**
-    - [x] Define Tech Stack (Python/FastAPI + Next.js)
-    - [x] Create Development Roadmap
-    - [x] Synthesize from Windsurf/Devin/Cursor/Replit/Lovable
-    - [x] Upgrade to v4.0 (Intent Classifier, State Machine, Safety)
-- [x] **Phase 1: Control & Safety (The Foundation)**
-    - [x] Initialize Python Project
-    - [x] Implement [AgentState](file:///Users/munishm/Documents/god-mode-agent/agent/state.py#16-31) enum + transition rules
-    - [x] Implement [RiskBudget](file:///Users/munishm/Documents/god-mode-agent/agent/risk_budget.py#40-221) (multi-dimensional)
-    - [x] Implement `CommandClassifier` + safety policy
-    - [x] Define Human Approval Contract ([ApprovalRequest](file:///Users/munishm/Documents/god-mode-agent/agent/approval.py#50-120) artifact)
-    - [x] Implement Decision Logger (Structured JSON Audit Trail)
-    - [x] Implement RBAC System (Roles & Permissions)
-    - [x] Build [StateMachineController](file:///Users/munishm/Documents/god-mode-agent/agent/controller.py#20-208)
-    - [x] Simulate 3 fake tasks (Dry Run)
-    - [x] Implement Intent Confidence & Ambiguity Fallback
-    - [x] Implement Precondition Checks (Git HEAD / Checksums)
-    - [x] Implement Governance Self-Test Module (14/14 tests)
+## High Impact
+- [x] #1 Runtime Pre-Check — `_check_runtime()` verifies java/node/docker/go/etc. installed
+- [x] #2 Multi-Language Error Detection — parses Java/Node/Go/Rust/Dart/C++ tracebacks
+- [x] #3 Stack Context in Planning — passes detected stack to LLM planning prompt
 
-- [x] **Phase 2: Execution Hardening (The Hands)**
-    - [x] Implement Task Isolation (Atomic Branching + Clean Tree Invariant)
-    - [x] Implement Optimistic Merge Guard (CI SHA == Branch HEAD)
-    - [x] Implement Plan Envelope Validator (Inputs + Toolchain + Dep Freeze)
-    - [x] Implement Atomic State Transitions (Invariant Guard + Rollback)
-    - [x] Implement Adaptive Kill Switch Cascade (Stack-Aware + Heartbeat + Extension)
-    - [x] Implement Network Policy (OS-Level Block + Lockfile Hash)
-    - [x] Define Rollback Domains (Atomic: `git reset --hard`)
-    - [ ] Implement CI Gate Integration
+## Medium Impact
+- [x] #4 Health Check for Servers — `_detect_port()` + `_health_check()` after `_run_server()`
+- [x] #5 Multi-Step Run Commands — `run_commands` array in plan for sequential execution
+- [x] #6 Auto-Git Commit — Step 12 auto-commits on success with `[god-mode-agent]` prefix
 
-- [x] **Phase 3: Cognitive Hardening (The Mind)**
-    - [ ] Implement TDD Gate (Red/Green Integrity Check)
-    - [ ] Implement Anti-Mocking Validator (No Tautologies)
-    - [x] Implement Bounded LSP Loop (Syntax Retry Only)
-    - [ ] Implement Replay Log (Tool Hash + Sampling Hash + Manifest)
-    - [x] Implement Non-Determinism Budget (Temp=0 Enforcement)
-    - [ ] Implement Ultra-Strict Express Lane (Diff Guard: No Executable/Shebang)
-    - [x] Implement Supply Chain Security (Typosquatting Check)
-    - [ ] Implement Graph-Based Context Retrieval
-
-- [x] **Phase 4: Execution & Diffs (The Work)**
-    - [x] Implement sandboxed `run_command` with smart timeouts
-    - [x] Implement diff-first editing (patch → apply → rollback)
-    - [x] Implement Secrets Policy (Redaction & Injection)
-    - [ ] Shell session persistence
-
-- [x] **Phase 5: Planning & Discipline (The Manager)**
-    - [x] Implement IntentClassifier (LLM-powered)
-    - [x] Enforce task.md + implementation_plan.md
-    - [ ] Implement `ImpactAnalysis` (dependency graph)
-    - [x] Implement `RepoDiscovery` (detect stack)
-
-- [x] **Phase 6: Verification & Feedback (The Tester)**
-    - [x] Hierarchical verification pipeline (multi-tier)
-    - [ ] Test-generation-first workflow
-    - [x] Human feedback loop (chat-based)
-
-- [ ] **Phase 7: Deep Intelligence (The Brain)**
-    - [ ] Background ChromaDB indexing
-    - [ ] `ripgrep` wrapper (Tier 1) + `semantic_search` (Tier 2)
-    - [ ] External Docs RAG
-
-- [x] **Phase 8: Multi-Stack Execution (v8.0)**
-    - [x] Create `stack_profiles.py` (Python, Java, Node, Go, Rust, Dart, Docker, Generic)
-    - [x] Stack detection from task keywords + repo analysis
-    - [x] Parameterize prompts with `{language}` (CODE + FIX templates)
-    - [x] LLM-driven command planning (install/compile/lint/run/test)
-    - [x] Generic dependency installer (npm/pip/cargo/go mod/etc.)
-    - [x] Compile step for Java/Go/Rust/C++
-    - [x] Multi-language lint (LSP for Python, subprocess for others)
-    - [x] Multi-language verification pipeline
-    - [x] Chat UI updated for multi-stack awareness
-
-- [x] **Phase 9: Robustness Improvements**
-    - [x] Runtime pre-check (`shutil.which()` for java/node/docker/go + install hints)
-    - [x] Universal error detection (known patterns + catch-all `file.ext:lineN` for any language)
-    - [x] Stack context passed to LLM during planning
-    - [x] Smart command timeouts (Docker=10m, builds=5m, tests=3m)
-    - [x] Server detection + background Popen + health check (`_detect_port` + `_health_check`)
-    - [x] Multi-step run commands (`run_commands[]` array)
-    - [x] Auto-git commit on success (`[god-mode-agent] <summary>`)
-    - [x] Graceful OS error handling + PATH augmentation
-    - [x] Background process cleanup in `finally` block
-
-- [x] **Phase 10: Real-World Readiness**
-    - [x] Parallel Process Support (Backend + Frontend) via `ProcessManager`
-    - [x] Streaming Output (Real-time logs)
-    - [x] Environment Variable Handling (.env detection/generation)
-    - [x] Database Lifecycle Management (Migrate/Seed hooks)
-
+## Verification
 - [x] **Phase 11: Cognitive Enhancements ("The Brain")**
-    - [x] Smart Stack Detection (LLM Fallback)
+    - [x] Smart Stack Detection (LLM Fallback in `RepoDiscovery`)
     - [x] Persistent Memory (`.agent/architecture.md`)
-    - [x] Semantic Code Search (`_select_relevant_files`)
+    - [x] Semantic Code Search (LLM-guided codebase navigation)
 
 - [x] **Phase 12: Tooling Depth ("The Hands")**
-    - [x] Docker Inspector
-    - [x] Database Inspector
-    - [x] Browser Tester
+    - [x] Docker Inspector (Logs, Inspect, Exec)
+    - [x] Database Inspector (Schema, Seed Verification)
+    - [x] Browser Testing (Headless verification)
 
-- [x] **Phase 13: Interactive Troubleshooting ("The Mouth")**
-    - [x] Guided Debugging (Ask for help)
+- [ ] **Phase 13: Interactive Troubleshooting ("The Mouth")**
+    - [x] Guided Debugging (Ask for help after N failures)
+    - [ ] Clarification Mode (Ambiguity detection)
+    - [ ] Clarification Mode (Ambiguity detection)
 
-- [x] **Phase 14: External Knowledge ("The Library Card")** 📚
-    - [x] Doc Crawler Tool
-    - [x] Auto-Research on Import Errors
+## Phase 1-13 Polish (Robustness)
+- [x] **Active Debugging**: Auto-run Inspectors (Docker/DB) on error and feed logs to LLM
+- [x] **Process Resilience**: `wait_for_port` detects early crashes immediately
+- [ ] **Smart Context 2.0**: `_select_relevant_files` sees snippets, not just paths
 
-- [x] **Phase 1-13 Polish (Robustness)** 💎
-    - [x] Active Debugging (Auto-Inspectors)
-    - [x] Process Resilience (Fast Failure Detection)
+## Phase 14: External Knowledge (The "Library Card") 📚
+- [x] **Doc Crawler Tool**: `search_docs(query)` and `read_page(url)`
+- [x] **Integration**: `_gather_diagnostics` searches docs on `ImportError`/`AttributeError`
 
+## Phase 15: Hybrid Control ("The Co-Pilot Switch") 🎛️
+- [x] **Interactive Hook**: `TaskExecutor` accepts `approval_callback`.
+- [x] **Checkpoints**: Pause at `PLAN_REVIEW` and `CODE_REVIEW`.
+- [x] **Chat Toggle**: `/mode auto` vs `/mode interactive`.
+
+## Phase 16: Visual Perception (The "Visual Cortex") 👁️
+- [x] **Browser Upgrade**: `BrowserTester` returns valid screenshots.
+- [x] **Multimodal Loop**: Feed screenshots to LLM for layout analysis.
+- [x] **Visual Verify**: `verify_visuals("Check if button is centered")`.
+
+## Phase 17: Interactive Plan Refinement 🗣️
+- [x] **Feedback Loop**: Allow user to provide text feedback during `PLAN_REVIEW`.
+- [x] **Regeneration**: `TaskExecutor` regenerates plan based on feedback.
+- [x] **Chat UI**: Update `/mode interactive` handler to accept flexible input.
+
+## Phase 18: Knowledge Graph Integration 🧠
+- [x] **Graph Builder**: `KnowledgeGraph` class to parse imports (Universal Regex support).
+- [x] **Context Injection**: `generate_plan` uses graph to find related files.
+- [x] **Impact Analysis**: Identify downstream dependents of changed files.
+
+## Phase 19: Final System Verification 🧪
+- [x] **Scenario**: Create Flask app with UI component.
+- [x] **KG Check**: Ensure test file linked via import.
+- [x] **Visual Check**: Verify "Blue Submit Button".
+- [x] **Execution**: End-to-end success.
+
+## Phase 20: God Mode Enhancements (The Hybrid Architecture) 🚀
+- [x] **LSP Integration**: `agent/tools/lsp.py` (Real-time error checking).
+- [x] **Visual Feedback**: `agent/tools/visual.py` (Quick screenshot + logs).
+- [x] **Specialized Personas**: `agent/core/prompt.py` (Mode-specific prompts).
+- [x] **Specialized Personas**: `agent/core/prompt.py` (Mode-specific prompts).
+- [x] **Verification**: Fix a broken React app using the new tools.
+
+## Phase 21: Autonomy & Interaction (The "Devin" Layer) 🤖
+- [x] **Interactive Browser**: Upgrade `agent/tools/browser_tester.py` to support `click`, `type`, `wait_for`.
+- [x] **Auto-Healing Verification**: Update `TaskExecutor` to auto-retry 3 times with different plans if verification fails.
+- [x] **End-to-End Test**: Verify a dynamic flow (Form Submission) using the new tools.
