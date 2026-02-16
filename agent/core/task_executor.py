@@ -80,6 +80,8 @@ class ExecutionPlan:
     background_processes: list[str] = field(default_factory=list) # e.g. ["npm run server", "docker-compose up -d db"]
     db_migrate_command: str = ""   # e.g. "python manage.py migrate", "npx prisma migrate dev"
     db_seed_command: str = ""      # e.g. "python manage.py loaddata", "npx prisma db seed"
+    visual_verification: str = ""  # e.g. "Check if the login form is centered and has a blue button"
+
 
 
 PLAN_SYSTEM_PROMPT = """You are a senior software engineer. You are given a task and context about a repository.
@@ -100,11 +102,14 @@ Your job is to create a detailed execution plan as a JSON object with this schem
     }
   ],
   "run_command": "python main.py",
-  "background_processes": ["npm run start:api"],
+  "background_processes": ["npm run start:api", "python server.py"],
   "db_migrate_command": "",
   "db_seed_command": "",
-  "test_command": "python -m pytest tests/"
+  "test_command": "python -m pytest tests/",
+  "visual_verification": "Check that the header is blue"
 }
+
+Rules:
 
 Rules:
 - Only output valid JSON, no markdown or explanation
@@ -117,6 +122,7 @@ Rules:
 - compile_command: shell command to compile if needed (e.g. 'javac -cp . Main.java', 'go build', 'cargo build') or empty string
 - lint_command: shell command to check syntax (e.g. 'python -m py_compile file.py', 'javac -Xlint:all File.java', 'npx tsc --noEmit') or empty string
 - run_command: the shell command to run/verify the code works (e.g. 'python main.py', 'java Main', 'node index.js', 'go run main.go', 'docker-compose up --build')
+- background_processes: list commands that must run in parallel and NOT block (e.g. starting servers 'python app.py', 'npm start'). These run BEFORE run_command.
 - run_commands: OPTIONAL list of multiple commands to run in sequence (e.g. ['npm install', 'npm run seed', 'npm start']). Use this if the task requires multiple steps. If provided, run_command is ignored.
 - test_command: command to run tests (leave empty string if no tests exist)
 - You can use ANY language or framework (Python, Java, Node.js, Go, Rust, Flutter, React, Django, Flask, FastAPI, Spring Boot, Express, Docker, etc.)
@@ -143,10 +149,10 @@ Context:
 - Detected Stack: {stack}
 
 Output a JSON object:
-{
+{{
   "relevant_files": ["path/to/file1.py", "path/to/file2.js"],
   "reasoning": "Brief explanation"
-}
+}}
 """
 
 
@@ -208,16 +214,38 @@ class TaskExecutor:
         self._process_manager = ProcessManager()
         self._memory = ArchitectureMemory(self._repo_path, self._provider)
         
-        # Phase 12 & 14 Tools
+        # Phase 12 & 14 & 20 Tools
         from agent.tools.docker_inspector import DockerInspector
         from agent.tools.db_inspector import DatabaseInspector
         from agent.tools.browser_tester import BrowserTester
         from agent.tools.doc_crawler import DocCrawler
-        
+        from agent.tools.lsp import LSPTool
+        from agent.tools.visual import VisualTool
+        from agent.core.prompt import prompt_manager
+
         self.docker_inspector = DockerInspector()
         self.db_inspector = DatabaseInspector()
         self.browser_tester = BrowserTester()
         self.doc_crawler = DocCrawler()
+        self.lsp_tool = LSPTool()
+        self.visual_tool = VisualTool()
+        self.prompt_manager = prompt_manager
+
+        self._approval_callback = None
+        self._knowledge_graph = None
+
+
+    def set_approval_callback(self, callback):
+        """Set a callback for interactive approval: callback(stage, details) -> bool."""
+        self._approval_callback = callback
+    
+    def _request_approval(self, stage: str, details: str) -> Any:
+        """Request user approval for a step. Returns True, False, or a feedback string."""
+        if not self._approval_callback:
+            return True
+        logger.info(f"Requesting approval for {stage}...")
+        return self._approval_callback(stage, details)
+
 
     def set_rollback_manager(self, mgr):
         """Attach a rollback manager that backs up files before writes."""
@@ -407,7 +435,17 @@ class TaskExecutor:
         
         print(f"  ✅ Created .env")
 
+
+    def _ensure_knowledge_graph(self):
+        if not self._knowledge_graph:
+            from agent.core.knowledge_graph import KnowledgeGraph
+            logger.info("Building Knowledge Graph...")
+            self._knowledge_graph = KnowledgeGraph(self._repo_path)
+            self._knowledge_graph.build()
+            logger.info(f"Knowledge Graph built with {len(self._knowledge_graph.graph)} nodes.")
+
     def _read_repo_context(self) -> str:
+
         """Read the repo structure and key files for context."""
         context_parts = []
         context_parts.append(f"Repository: {self._repo_path}\n")
@@ -495,8 +533,18 @@ class TaskExecutor:
 
         # If large repo, select relevant
         relevant = self._select_relevant_files(task, candidates)
+        
+        # Augment with Knowledge Graph
+        self._ensure_knowledge_graph()
+        if self._knowledge_graph:
+            related = self._knowledge_graph.get_related_files(relevant)
+            if len(related) > len(relevant):
+                 logger.info(f"Knowledge Graph added {len(related) - len(relevant)} related files.")
+                 relevant = list(related)
+
         if not relevant:
              return self._read_repo_context()
+
 
         # Read content of relevant files
         context_parts = []
@@ -534,7 +582,7 @@ class TaskExecutor:
              stack_hint += f"\n\n{arch_mem}"
 
         messages = [
-            {"role": "system", "content": PLAN_SYSTEM_PROMPT},
+            {"role": "system", "content": self.prompt_manager.get_system_prompt("PLANNING")},
             {"role": "user", "content": (
                 f"Task: {task}{stack_hint}"
                 f"\n\nRepository context:\n{context}"
@@ -567,8 +615,11 @@ class TaskExecutor:
             run_commands=plan_data.get("run_commands", []),
             background_processes=plan_data.get("background_processes", []),
             db_migrate_command=plan_data.get("db_migrate_command", ""),
+
             db_seed_command=plan_data.get("db_seed_command", ""),
+            visual_verification=plan_data.get("visual_verification", ""),
         )
+
 
         for f in plan_data.get("files", []):
             plan.files.append(FileAction(
@@ -600,7 +651,7 @@ class TaskExecutor:
                 pass
 
         messages = [
-            {"role": "system", "content": CODE_SYSTEM_PROMPT_TEMPLATE.format(
+            {"role": "system", "content": self.prompt_manager.get_system_prompt("CODING", 
                 language=self._stack_profile.code_prompt_language if self._stack_profile else "Python"
             )},
             {"role": "user", "content": (
@@ -612,6 +663,10 @@ class TaskExecutor:
                 f"\nRepository context:\n{context}{existing_content}"
             )},
         ]
+        # Checkpoint: Code Review
+        if not self._request_approval("code", f"About to write {len(plan.files)} files to disk."):
+             logger.warning("Code generation rejected by user.")
+             return plan
 
         logger.info(f"Generating code for {file_action.path}...")
         result = self._provider.complete(messages)
@@ -846,26 +901,70 @@ class TaskExecutor:
                 return port
         return None
 
-    @staticmethod
-    def _health_check(port: int, retries: int = 3) -> bool:
+    def _health_check(self, port: int, retries: int = 3) -> bool:
         """Try to reach localhost:port - returns True if server responds."""
-        import time
         import urllib.request
-        import urllib.error
-
+        import time
+        
+        url = f"http://localhost:{port}"
         for i in range(retries):
             try:
-                req = urllib.request.Request(
-                    f'http://localhost:{port}',
-                    method='GET',
-                )
-                urllib.request.urlopen(req, timeout=3)
-                return True
-            except (urllib.error.URLError, urllib.error.HTTPError,
-                    ConnectionError, OSError):
+                with urllib.request.urlopen(url, timeout=2):
+                    return True
+            except Exception:
                 if i < retries - 1:
-                    time.sleep(2)
+                    time.sleep(1)
         return False
+
+    def _visual_verify(self, criteria: str) -> bool:
+        """Capture screenshot and ask LLM to verify criteria."""
+        if not criteria:
+            return True
+
+        if not self.browser_tester.has_playwright:
+             print("  ⚠️  Visual verification skipped (Playwright missing)")
+             return True 
+
+        # Try to find a running server port to screenshot
+        # Heuristic: look at background processes for ports
+        port = 3000 # Default fallback
+        for cmd in self._process_manager.list_processes():
+             p = self._detect_port(cmd)
+             if p:
+                 port = p
+                 break
+        
+        url = f"http://localhost:{port}"
+        print(f"  👁️  Visual Verification on {url}...")
+        
+        b64_img = self.browser_tester.take_screenshot_base64(url)
+        if not b64_img:
+             print("  ❌ Failed to capture screenshot")
+             return False
+
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": f"Task: Verify this screenshot against the following criteria: {criteria}.\nReturn 'PASS' if it looks correct, or 'FAIL: <reason>' if not."},
+                    {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64_img}"}}
+                ]
+            }
+        ]
+        
+        try:
+            result = self._provider.complete(messages)
+            content = result.content.strip()
+            if "PASS" in content:
+                print(f"  ✅ Visual Check Passed: {content}")
+                return True
+            else:
+                print(f"  ❌ Visual Check Failed: {content}")
+                return False
+        except Exception as e:
+            print(f"  ⚠️  Visual Check Error: {e}")
+            return False
+
 
     def cleanup_background(self):
         """Stop any background server processes started during execution."""
@@ -877,6 +976,11 @@ class TaskExecutor:
                   error: str, plan: ExecutionPlan) -> str:
         """Use LLM to fix a broken file given the error output."""
         context = self._read_repo_context()
+
+        # Checkpoint: Fix Strategy
+        if not self._request_approval("fix", f"Error encountered in {file_action.path}:\n{error[:200]}...\nAttempting auto-fix {self.fix_attempts_used + 1}/{MAX_FIX_ATTEMPTS}"):
+            logger.warning("Auto-fix rejected by user.")
+            return code # Return original code
 
         lang = self._stack_profile.code_prompt_language if self._stack_profile else "Python"
         messages = [
@@ -1043,8 +1147,10 @@ class TaskExecutor:
         from agent.verification.lsp_loop import BoundedLSPLoop
         from agent.verification.verification_pipeline import VerificationPipeline, VerifyTier
         from agent.planning.plan_enforcer import PlanEnforcer
+        from agent.core.knowledge_graph import KnowledgeGraph
 
         # ── Step 0: Arm kill switch (adaptive) ──
+
         # Use detected stack (if any) or default
         stack_name = self._detect_stack(task).name
         kill_switch = KillSwitch.for_stack(stack_name)
@@ -1081,28 +1187,46 @@ class TaskExecutor:
         self._stack_profile = self._detect_stack(task)
         print(f"  🔧 Detected stack: {self._stack_profile.display_name}")
 
-        # ── Step 1: Generate plan ──
-        plan = self.generate_plan(task)
+        # ── Step 1: Generate plan (with interactive refinement) ──
+        while True:
+            plan = self.generate_plan(task)
 
-        print(f"\n📋 Plan: {plan.summary}")
-        print(f"🏗️  Stack: {plan.stack or self._stack_profile.name}")
-        if plan.dependencies:
-            print(f"📦 Dependencies: {', '.join(plan.dependencies)}")
-        if plan.install_command:
-            print(f"📥 Install: {plan.install_command}")
-        if plan.compile_command:
-            print(f"🔨 Compile: {plan.compile_command}")
-        print(f"📂 Files ({len(plan.files)}):")
-        for f in plan.files:
-            print(f"   [{f.action.upper()}] {f.path} - {f.description}")
-        if plan.run_command:
-            print(f"🏃 Run: {plan.run_command}")
-        if plan.run_commands:
-            print(f"🏃 Run steps: {len(plan.run_commands)} commands")
-            for i, cmd in enumerate(plan.run_commands, 1):
-                print(f"   {i}. {cmd}")
-        if plan.test_command:
-            print(f"🧪 Test: {plan.test_command}")
+            print(f"\n📋 Plan: {plan.summary}")
+            print(f"🏗️  Stack: {plan.stack or self._stack_profile.name}")
+            if plan.dependencies:
+                print(f"📦 Dependencies: {', '.join(plan.dependencies)}")
+            # ... (omitted print lines for brevity, assuming they are redundant or I should include them?)
+            # I must include all print lines to replace the block correctly.
+            if plan.install_command:
+                print(f"📥 Install: {plan.install_command}")
+            if plan.compile_command:
+                print(f"🔨 Compile: {plan.compile_command}")
+            print(f"📂 Files ({len(plan.files)}):")
+            for f in plan.files:
+                print(f"   [{f.action.upper()}] {f.path} - {f.description}")
+            if plan.run_command:
+                print(f"🏃 Run: {plan.run_command}")
+            if plan.run_commands:
+                print(f"🏃 Run steps: {len(plan.run_commands)} commands")
+                for i, cmd in enumerate(plan.run_commands, 1):
+                    print(f"   {i}. {cmd}")
+            if plan.test_command:
+                print(f"🧪 Test: {plan.test_command}")
+
+            # Checkpoint: Plan Review
+            approval = self._request_approval("plan", f"Plan Summary: {plan.summary}\nFiles to change: {len(plan.files)}")
+            
+            if approval is True:
+                break # Proceed
+            elif approval is False:
+                logger.warning("Plan rejected by user.")
+                return plan
+            elif isinstance(approval, str) and approval.strip():
+                # Feedback received
+                print(f"\n🔄 Updating plan with feedback: {approval}")
+                task = f"{task}\n\nUser Feedback on previous plan: {approval}"
+                continue # Regenerate
+
 
         # ── Step 1b: Runtime pre-check ──
         print(f"\n🔍 Checking runtime requirements...")
@@ -1387,7 +1511,18 @@ class TaskExecutor:
                     print(f"    Last error: {last_err}")
                     self.last_run_success = False
                     self.last_error = f"Command failed: {command}. Last error: {last_err}"
+                    self.last_error = f"Command failed: {command}. Last error: {last_err}"
                     break  # Stop running remaining commands
+
+        # ── Step 9b: Visual Verification ──
+        if plan.visual_verification:
+            print(f"\n👁️  Running Visual Verification...")
+            if not self._visual_verify(plan.visual_verification):
+                print(f"  ⚠️  Visual verification failed (see details above)")
+                # Choice: fail the whole run? Or just warn?
+                # For now just warn, as it might be subjective.
+            else:
+                print(f"  ✅ Visual verification passed")
 
         # ── Step 10: Verification pipeline ──
         print(f"\n🧪 Running verification pipeline...")

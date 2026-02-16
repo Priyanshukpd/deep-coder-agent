@@ -114,6 +114,9 @@ class ChatSession:
         self._last_plan = None
         self._last_error = None
         self.last_action_success = True
+        self.interactive_mode = False  # Toggle for Co-Pilot behavior
+
+
 
     # ── Repo Context ─────────────────────────────────────────
 
@@ -244,7 +247,12 @@ class ChatSession:
         rollback_mgr = RollbackManager(self._repo_path)
         executor.set_rollback_manager(rollback_mgr)
 
+        # Hook up interactive approval if enabled
+        if self.interactive_mode:
+             executor.set_approval_callback(self._approval_handler)
+
         if action.type == "run":
+
             # Just run a command
             if action.run_command:
                 result = executor.run_code(action.run_command)
@@ -390,8 +398,22 @@ class ChatSession:
                 "  /clear    — Clear conversation memory\n"
                 "  /files    — List repo files\n"
                 "  /run CMD  — Run a shell command\n"
+                "  /mode [auto|interactive] — Toggle Co-Pilot mode\n"
                 "  /quit     — Exit chat\n"
             )
+
+        if command == "/mode":
+
+            if len(parts) > 1:
+                mode = parts[1].lower()
+                if mode in ("interactive", "i", "copilot"):
+                    self.interactive_mode = True
+                    return "🎛️  Switched to **Interactive Mode**. I will ask for approval before executing steps."
+                elif mode in ("auto", "a", "god"):
+                    self.interactive_mode = False
+                    return "🚀 Switched to **Auto Mode**. I will execute autonomously."
+            return f"Current mode: **{'Interactive' if self.interactive_mode else 'Auto'}**"
+
 
         if command == "/status":
             return (
@@ -475,7 +497,23 @@ class ChatSession:
 
     # ── Main Chat Loop ───────────────────────────────────────
 
+    def _approval_handler(self, stage: str, details: str) -> Any:
+        """Handle interactive approval requests."""
+        print(f"\n✋ **Approval Requested: {stage.upper()}**")
+        print(f"   {details}")
+        try:
+             choice = input("   Proceed? [Y/n] or enter feedback: ").strip()
+             if choice.lower() in ('', 'y', 'yes'):
+                 return True
+             elif choice.lower() in ('n', 'no'):
+                 return False
+             else:
+                 return choice # Feedback string
+        except (EOFError, KeyboardInterrupt):
+             return False
+
     def loop(self):
+
         """Main interactive chat loop."""
         print(f"\n{'═' * 60}")
         print(f"  🤖 God Mode Agent — Chat Mode")
@@ -544,6 +582,7 @@ class ChatSession:
                     content=f"[Execution result]: {result}",
                     timestamp=datetime.now().isoformat(),
                 ))
+
 
             elapsed = time.time() - start
             print(f"  \033[2m({elapsed:.1f}s)\033[0m\n")
