@@ -1,6 +1,6 @@
 # The "God Mode" Agent — Architecture v9.0 (Autonomous)
 
-**Philosophy:** "Boring is Reliable. Optimistic is Scalable. Precision is Mandatory."
+**Philosophy:** "Boring is Reliable. Optimistic is Scalable. Shell-First is Efficient. Precision is Mandatory."
 **Status:** **Build Target (Final)**
 
 ---
@@ -200,7 +200,8 @@ On successful task completion, auto-commits with `[god-mode-agent] <summary>` an
 | **DocCrawler** | `agent/tools/doc_crawler.py` | External documentation fetcher |
 | **LSPTool** | `agent/tools/lsp.py` | Multi-language linting/diagnostics |
 | **VisualTool** | `agent/tools/visual.py` | Screenshot-based visual feedback |
-| **PromptManager** | `agent/core/prompt.py` | Persona-based prompt management |
+| **PromptManager** | `agent/core/prompt.py` | Persona-based prompts + Shell Efficiency |
+| **SecurityAdvisor** | `agent/tools/security_advisor.py` | LLM-powered second opinion for security |
 
 ---
 
@@ -218,6 +219,8 @@ Step 1b: RUNTIME PRE-CHECK ──→ [shutil.which() → java? node? docker?]
 Step 2:  FREEZE ENVELOPE ──→ [SHA256 hash of plan]
    ↓
 Step 3:  SUPPLY CHAIN CHECK ──→ [Dependency safety scan]
+   ↓
+Step 3b: SECURITY ADVISOR ──→ [Analyst second opinion if flagged]
    ↓
 Step 4:  TASK ISOLATION ──→ [git checkout -b agent/task-id]
    ↓
@@ -255,6 +258,9 @@ Step 12: AUTO-GIT COMMIT ──→ [On success: git add + commit "[god-mode-agen
 | **Secrets Policy** | Regex-based detection + auto-redaction |
 | **Supply Chain** | Dependency name analysis for typosquatting |
 | **Plan Envelope** | Immutable scope — no unplanned file writes |
+| **Shell Power** | Prefer `mv/rm` shell commands over Python scripts |
 | **Task Isolation** | Git branch per task — rollback on failure |
 | **Runtime Pre-Check** | Verify tools exist before executing unknown commands |
-
+| **Security Advisor** | Autonomous validation of suspicious dependencies. |
+| **Reactive Feedback Loop** | Real-time course correction and re-planning via CLI & Web interaction. |
+| **Premium Web UI** | Pulsatile God Mode indicators and mode-aware chat decorators. |

@@ -18,6 +18,8 @@ Built a **production-ready agentic coding assistant** with a 12-step execution p
 | Express lane | Correctly gates docs-only vs code changes |
 | Interactive Browser | **DuckDuckGo search / Title Verified** ✅ |
 | Auto-Healing | **Self-correction loop / Verify-Fix-Verify** ✅ |
+| **Security Advisor** | **LLM Reasoning (SAFE/SUSPICIOUS) Verification** ✅ |
+| **Shell Power** | **Direct `mv/rm` execution verified** ✅ |
 
 ---
 
@@ -88,7 +90,22 @@ Step 12 → Auto-Git Commit ([god-mode-agent] summary)
 
 ### Phase 14: External Knowledge ("The Library Card") 📚
 - **Doc Crawler**: `search_docs` + `read_page` to fetch API docs on-the-fly.
-- **Auto-Research**: Triggers on `ImportError`/`AttributeError`.
+- **Integration**: `_gather_diagnostics` searches docs on `ImportError`/`AttributeError`.
+
+### Phase 23: LLM-Controlled Security Advisor ("The Analyst") 🛡️
+- **Dynamic Reasoning**: Replaced hardcoded whitelists with an LLM-powered second opinion layer.
+- **False Positive Handling**: Correctly identifies and allows standard libraries (e.g., `os`) while blocking real risks.
+
+### Phase 24: Repository Beautification (Project 'Wings') 📂✨
+- **Autonomous Task**: Full reorganization of a messy repository into `src`, `data`, `docs`, `models`, and `tests`.
+- **Validation**: Verified end-to-end success with zero manual intervention.
+
+### Phase 25: Shell Command Empowerment ("The Antigravity Way") 🐚⚡
+- **Direct Shell Support**: Enabled the Agent to use `mv`, `rm`, `cp`, and `mkdir` directly in `run_commands` instead of writing scripts.
+- **Efficiency**: Verified autonomous cleanup of files using direct shell execution.
+
+### Phase 26: Reactive Feedback Loop
+- **Mid-execution Course Correction**: Enabled mid-execution natural language "course corrections" and re-planning.
 
 ### Phase 1-13 Polish (Robustness) 💎
 - **Active Debugging**: Auto-run inspectors/crawlers on error -> feed logs to LLM.

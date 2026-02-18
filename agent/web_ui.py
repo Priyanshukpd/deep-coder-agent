@@ -108,6 +108,57 @@ st.markdown("""
         -webkit-background-clip: text;
         -webkit-text-fill-color: transparent;
     }
+    .mode-badge {
+        display: inline-block;
+        padding: 4px 12px;
+        border-radius: 20px;
+        font-weight: bold;
+        font-size: 0.8rem;
+        margin-bottom: 10px;
+    }
+    .god-mode {
+        background: rgba(155, 89, 182, 0.1);
+        color: #9b59b6;
+        border: 1px solid rgba(155, 89, 182, 0.2);
+        animation: pulse 2s infinite;
+    }
+    .copilot-mode {
+        background: rgba(74, 144, 226, 0.1);
+        color: #4a90e2;
+        border: 1px solid rgba(74, 144, 226, 0.2);
+    }
+    @keyframes pulse {
+        0% { transform: scale(1); box-shadow: 0 0 0 0 rgba(155, 89, 182, 0.4); }
+        70% { transform: scale(1.02); box-shadow: 0 0 0 10px rgba(155, 89, 182, 0); }
+        100% { transform: scale(1); box-shadow: 0 0 0 0 rgba(155, 89, 182, 0); }
+    }
+    .stChatInputContainer {
+        border-top: 1px solid rgba(128, 128, 128, 0.1);
+        padding-top: 20px;
+        background: transparent !important;
+    }
+    .fixed-controls-container {
+        position: fixed;
+        bottom: 85px;
+        left: 20rem; /* Adjusted for sidebar */
+        right: 2rem;
+        z-index: 999;
+        background: rgba(255, 255, 255, 0.8);
+        backdrop-filter: blur(10px);
+        padding: 10px 20px;
+        border-radius: 15px;
+        border: 1px solid rgba(128, 128, 128, 0.1);
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        box-shadow: 0 -5px 15px rgba(0,0,0,0.05);
+    }
+    @media (max-width: 768px) {
+        .fixed-controls-container {
+            left: 1rem;
+            right: 1rem;
+        }
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -275,9 +326,31 @@ for msg in st.session_state.messages:
             # Show result OUTSIDE the status block so it's always visible
             st.markdown(msg["action_result"])
 
+# ── Dynamic Mode Controls (Fixed at Bottom) ─────────────────────
+
+# We use an empty container and then fill it to keep it at the end of the script,
+# but our CSS will handle the actual "fixed" positioning.
+st.markdown('<div class="fixed-controls-container">', unsafe_allow_html=True)
+col1, col2 = st.columns([1, 2])
+
+with col1:
+    # Quick toggle
+    mode_btn_label = "✋ Switch to Co-pilot" if not session.interactive_mode else "🚀 Switch to God Mode"
+    if st.button(mode_btn_label, use_container_width=True, key="fixed_mode_toggle"):
+        session.interactive_mode = not session.interactive_mode
+        st.rerun()
+
+with col2:
+    # Status Badge with centered alignment
+    if not session.interactive_mode:
+        st.markdown('<div style="text-align: right;"><div class="mode-badge god-mode" style="margin-bottom:0;">✨ GOD MODE ACTIVE</div></div>', unsafe_allow_html=True)
+    else:
+        st.markdown('<div style="text-align: right;"><div class="mode-badge copilot-mode" style="margin-bottom:0;">🤝 CO-PILOT ACTIVE</div></div>', unsafe_allow_html=True)
+st.markdown('</div>', unsafe_allow_html=True)
 
 # Handle Input
-if  prompt := st.chat_input("What do you want to build?"):
+placeholder = "Give God Mode a task..." if not session.interactive_mode else "Command your Co-pilot..."
+if prompt := st.chat_input(placeholder):
     # 1. User Message
     st.session_state.messages.append({"role": "user", "content": prompt})
     with st.chat_message("user"):

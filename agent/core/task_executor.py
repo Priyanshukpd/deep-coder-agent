@@ -214,6 +214,7 @@ class TaskExecutor:
         self._process_manager = ProcessManager()
         self._process_manager = ProcessManager()
         self._memory = ArchitectureMemory(self._repo_path, self._provider)
+        self._accumulated_feedback: list[str] = []
         
         # Phase 12 & 14 & 20 Tools
         from agent.tools.docker_inspector import DockerInspector
@@ -239,6 +240,12 @@ class TaskExecutor:
     def set_approval_callback(self, callback):
         """Set a callback for interactive approval: callback(stage, details) -> bool."""
         self._approval_callback = callback
+    
+    def add_feedback(self, feedback: str):
+        """Add additional user comments or tasks to the current context."""
+        if feedback:
+            self._accumulated_feedback.append(feedback)
+            logger.info(f"Feedback added: {feedback}")
     
     def _request_approval(self, stage: str, details: str) -> Any:
         """Request user approval for a step. Returns True, False, or a feedback string."""
@@ -582,10 +589,18 @@ class TaskExecutor:
         if arch_mem:
              stack_hint += f"\n\n{arch_mem}"
 
+        # User feedback injection
+        feedback_context = ""
+        if self._accumulated_feedback:
+            feedback_context = "\n\n### ADDITIONAL USER FEEDBACK / REQUIREMENTS:\n"
+            for i, fb in enumerate(self._accumulated_feedback, 1):
+                feedback_context += f"{i}. {fb}\n"
+            feedback_context += "\nIMPORTANT: Incorporate the above feedback into your plan. If it contradicts the original task, the feedback takes priority."
+
         messages = [
             {"role": "system", "content": self.prompt_manager.get_system_prompt("PLANNING")},
             {"role": "user", "content": (
-                f"Task: {task}{stack_hint}"
+                f"Task: {task}{stack_hint}{feedback_context}"
                 f"\n\nRepository context:\n{context}"
             )},
         ]
@@ -595,9 +610,15 @@ class TaskExecutor:
 
         try:
             text = result.content.strip()
-            if text.startswith("```"):
+            # Robust JSON extraction: look for the first '{' and last '}'
+            import re as _json_re
+            match = _json_re.search(r'(\{.*\})', text, _json_re.DOTALL)
+            if match:
+                text = match.group(1)
+            elif text.startswith("```"):
                 text = text.split("\n", 1)[1]
                 text = text.rsplit("```", 1)[0]
+            
             plan_data = json.loads(text)
         except json.JSONDecodeError as e:
             logger.error(f"Failed to parse plan JSON: {e}")
@@ -651,12 +672,20 @@ class TaskExecutor:
             except Exception:
                 pass
 
+        # User feedback injection
+        feedback_context = ""
+        if self._accumulated_feedback:
+            feedback_context = "\n\n### ADDITIONAL USER FEEDBACK / REQUIREMENTS:\n"
+            for i, fb in enumerate(self._accumulated_feedback, 1):
+                feedback_context += f"{i}. {fb}\n"
+            feedback_context += "\nIMPORTANT: Incorporate the above feedback into the code you generate."
+
         messages = [
             {"role": "system", "content": self.prompt_manager.get_system_prompt("CODING", 
                 language=self._stack_profile.code_prompt_language if self._stack_profile else "Python"
             )},
             {"role": "user", "content": (
-                f"Task: {task}\n\n{plan_summary}\n"
+                f"Task: {task}{feedback_context}\n\n{plan_summary}\n"
                 f"Now generate the COMPLETE code for: {file_action.path}\n"
                 f"Description: {file_action.description}\n"
                 f"Action: {file_action.action}\n"
@@ -988,11 +1017,19 @@ class TaskExecutor:
             logger.warning("Auto-fix rejected by user.")
             return code # Return original code
 
+        # User feedback injection
+        feedback_context = ""
+        if self._accumulated_feedback:
+            feedback_context = "\n\n### ADDITIONAL USER FEEDBACK / REQUIREMENTS:\n"
+            for i, fb in enumerate(self._accumulated_feedback, 1):
+                feedback_context += f"{i}. {fb}\n"
+            feedback_context += "\nIMPORTANT: Incorporate the above feedback into the fix."
+
         lang = self._stack_profile.code_prompt_language if self._stack_profile else "Python"
         messages = [
             {"role": "system", "content": FIX_SYSTEM_PROMPT_TEMPLATE.format(language=lang)},
             {"role": "user", "content": (
-                f"Task: {task}\n\nFile: {file_action.path}\n"
+                f"Task: {task}{feedback_context}\n\nFile: {file_action.path}\n"
                 f"Description: {file_action.description}\n\n"
                 f"Current code:\n```\n{file_action.content}\n```\n\n"
                 f"Error when running `{plan.run_command}`:\n"

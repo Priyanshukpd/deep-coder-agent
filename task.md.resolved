@@ -72,3 +72,20 @@
 - [x] **Interactive Browser**: Upgrade `agent/tools/browser_tester.py` to support `click`, `type`, `wait_for`.
 - [x] **Auto-Healing Verification**: Update `TaskExecutor` to auto-retry 3 times with different plans if verification fails.
 - [x] **End-to-End Test**: Verify a dynamic flow (Form Submission) using the new tools.
+
+## Phase 22: Supply Chain Robustness ("The Analyst's Eye") 🛡️
+- [x] **Heuristic Refinement**: Correctly flag standard library name collisions (e.g., `os` vs `cors`).
+- [x] **Advisor Tool**: Implement `SecurityAdvisor` for LLM-powered second opinions.
+- [x] **Verification**: Auto-Healing confirms standard libraries as SAFE autonomously.
+
+## Phase 23: Autonomous Project Management (Project 'Wings') 📂✨
+- [x] **Data Migration**: Autonomous file reorganization into `src/`, `data/`, etc.
+- [x] **Verification**: End-to-end success in `wings` repo with zero human help.
+
+## Phase 24: Shell Power ("The Direct Path") ⚡🐚
+- [x] **Planning Logic**: Update `PLANNING_PROMPT` to prefer `mv`, `rm`, `cp`.
+- [x] **Verification**: Successful autonomous checkout and cleanup using direct shell commands.
+
+## Phase 25: Mission v7.5.1.1 - Sealed & Autonomous (Security Advisor, Shell Power, Project Wings)
+- [x] **Final Documentation**: Update all `*.md.resolved` files with the autonomous kernel specification.
+## Phase 26: Reactive Feedback Loop (Human-Agent Jam, CLI Interactive Loop, Reactive Re-Planning)

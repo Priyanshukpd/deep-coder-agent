@@ -339,8 +339,7 @@ def run_full_pipeline(task: str, repo_path: str = ".", dry_run: bool = False,
     provider = create_provider(config)
     executor = TaskExecutor(provider, repo_path)
 
-    if dry_run:
-        plan = executor.generate_plan(task)
+    def _display_plan(plan):
         print(f"\n📋 Plan: {plan.summary}")
         if plan.dependencies:
             print(f"📦 Dependencies: {', '.join(plan.dependencies)}")
@@ -351,23 +350,41 @@ def run_full_pipeline(task: str, repo_path: str = ".", dry_run: bool = False,
             print(f"🏃 Run: {plan.run_command}")
         if plan.test_command:
             print(f"🧪 Test: {plan.test_command}")
+
+    if dry_run:
+        plan = executor.generate_plan(task)
+        _display_plan(plan)
         print("\n🔍 Dry run complete — no files written.")
         llm_calls = provider.call_count
         exec_log.add("execution", "dry_run", f"{len(plan.files)} files planned")
     else:
-        # User confirmation
+        # User confirmation / Interactive Feedback Loop
         if not yes:
-            print("\n⚠️  The agent will generate and write code to your repo.")
-            try:
-                answer = input("   Proceed? [Y/n] ").strip().lower()
-                if answer and answer not in ('y', 'yes'):
-                    print("   Aborted by user.")
-                    exec_log.add("execution", "aborted", "user declined")
-                    exec_log.save()
+            while True:
+                print("\n⚠️  The agent will generate and write code to your repo.")
+                try:
+                    answer = input("   Proceed? [Y/n/feedback] ").strip()
+                    low_answer = answer.lower()
+                    
+                    if low_answer in ('y', 'yes', ''):
+                        break
+                    elif low_answer in ('n', 'no'):
+                        print("   Aborted by user.")
+                        exec_log.add("execution", "aborted", "user declined")
+                        exec_log.save()
+                        return False
+                    else:
+                        # Treat as feedback!
+                        print(f"\n🗣️  Feedback received: \"{answer}\"")
+                        print("🧠 Re-planning based on new instructions...")
+                        executor.add_feedback(answer)
+                        # Regenerate plan with feedback context
+                        plan = executor.generate_plan(task)
+                        _display_plan(plan)
+                        # Continue loop to ask again
+                except (EOFError, KeyboardInterrupt):
+                    print("\n   Aborted.")
                     return False
-            except (EOFError, KeyboardInterrupt):
-                print("\n   Aborted.")
-                return False
 
         # Backup files for rollback
         executor.set_rollback_manager(rollback_mgr)

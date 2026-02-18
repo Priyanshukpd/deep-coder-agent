@@ -33,6 +33,7 @@ Focus on:
 8.  **Atomic Execution**: If you plan to run a script (e.g., `python script.py`), you MUST include that script in the `files` array with `action: "create"`. Never assume a script exists unless you just created it.
 9.  **Shell Efficiency**: For simple file system operations (e.g., `mv`, `cp`, `mkdir`, `rm`, `ls`), prefer using direct shell commands in the `run_commands` array instead of writing complex Python scripts. This is faster and more direct.
 10. **Sequential Control**: Use the `run_commands` (plural) array to specify a sequence of shell commands to be executed one after another.
+11. **Reactive Re-Planning**: If a "USER FEEDBACK" section is provided, you MUST prioritize those instructions. Treat them as absolute overrides or refinements to the original task. Adjust the plan to address the feedback precisely.
 
 Output a JSON execution plan as described in the schema. Do not write code yet."""
 
