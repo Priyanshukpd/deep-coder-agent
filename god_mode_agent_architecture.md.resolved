@@ -264,3 +264,4 @@ Step 12: AUTO-GIT COMMIT ──→ [On success: git add + commit "[god-mode-agen
 | **Security Advisor** | Autonomous validation of suspicious dependencies. |
 | **Reactive Feedback Loop** | Real-time course correction and re-planning via CLI & Web interaction. |
 | **Premium Web UI** | Pulsatile God Mode indicators and mode-aware chat decorators. |
+| **Decoupled Architecture** | REST API (`agent/server.py`) + React Frontend (`ui/`) for scalability. |

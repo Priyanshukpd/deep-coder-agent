@@ -107,6 +107,11 @@ Step 12 → Auto-Git Commit ([god-mode-agent] summary)
 ### Phase 26: Reactive Feedback Loop
 - **Mid-execution Course Correction**: Enabled mid-execution natural language "course corrections" and re-planning.
 
+### Phase 27: React Evolution ⚛️
+- **Decoupled UI**: Built a FastAPI backend (`agent/server.py`) and a Vite + React frontend (`ui/`).
+- **Premium UX**: Implemented a glassmorphic interface with real-time mode toggles and status badges.
+- **Verification**: Verified via `npm run build` and backend connectivity check.
+
 ### Phase 1-13 Polish (Robustness) 💎
 - **Active Debugging**: Auto-run inspectors/crawlers on error -> feed logs to LLM.
 - **Process Resilience**: `wait_for_port` detects early crashes immediately.
