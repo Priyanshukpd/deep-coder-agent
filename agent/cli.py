@@ -2,9 +2,10 @@
 God Mode Agent — CLI Runner.
 
 Usage:
-    python -m agent "Fix the null pointer in auth module"
-    python -m agent --repo /path/to/repo "Add dark mode"
-    python -m agent --dry-run "Refactor the API layer"
+    god-mode start                      Launch the God Mode local daemon and Web UI
+    python -m agent "Fix the bug"       Run directly against a task
+    python -m agent --repo /path "Add dark mode"
+    python -m agent --dry-run "Refactor"
     python -m agent --self-test
     python -m agent --scan .
     python -m agent --interactive
@@ -213,7 +214,7 @@ def run_scan(directory: str):
     return repo_map
 
 
-def run_classify(task: str):
+def run_classify(task: str, repo_path: str = None):
     """Classify a task using the intent classifier."""
     from agent.config import AgentConfig
     from agent.planning.intent import IntentClassifier
@@ -228,8 +229,15 @@ def run_classify(task: str):
     else:
         mode = "heuristic"
 
+    repo_context = ""
+    if repo_path and os.path.isdir(repo_path):
+        from agent.planning.repo_discovery import RepoDiscovery
+        # Quick scan to give LLM context on whether this is a greenfield or existing project
+        repo_map = RepoDiscovery(repo_path).scan()
+        repo_context = f"Project type: {repo_map.stack.summary}. Files: {repo_map.file_count}."
+
     classifier = IntentClassifier(provider=provider)
-    result = classifier.classify(task)
+    result = classifier.classify(task, repo_context=repo_context)
 
     print(f"\n🧠 Intent Classification ({mode})\n")
     print(f"  Task:       {task}")
@@ -285,7 +293,7 @@ def run_full_pipeline(task: str, repo_path: str = ".", dry_run: bool = False,
 
     # ── Step 2: Intent Analysis ──
     print("─── Step 2: Intent Analysis ───")
-    intent_result = run_classify(task)
+    intent_result = run_classify(task, repo_path)
     intent_str = intent_result.intent.value
     exec_log.add("intent_analysis", intent_str,
                  f"confidence={intent_result.confidence:.0%}")
@@ -302,6 +310,11 @@ def run_full_pipeline(task: str, repo_path: str = ".", dry_run: bool = False,
                     return False
             except (EOFError, KeyboardInterrupt):
                 return False
+        else:
+            print("  🛑 Ambiguous task aborted due to --yes (no-interaction) mode. Please rephrase your request.")
+            exec_log.add("execution", "aborted", "ambiguous intent in --yes mode")
+            exec_log.save()
+            return False
 
     # ── Step 3: Precondition Checks ──
     print("─── Step 3: Precondition Checks ───")
@@ -508,14 +521,69 @@ def run_web_ui(repo_path: str = "."):
     except KeyboardInterrupt:
         print("\n👋 Web UI stopped.")
 
+def run_start():
+    """Start the God Mode background server and open the browser."""
+    import uvicorn
+    import threading
+    import webbrowser
+    import time
+    
+    print(f"\n🚀 Starting God Mode Daemon v{VERSION}...")
+    
+    # We will run the FastAPI server from agent.server
+    def run_server():
+        try:
+            uvicorn.run("agent.server:app", host="0.0.0.0", port=8000, log_level="warning")
+        except Exception as e:
+            print(f"Server error: {e}")
+            
+    server_thread = threading.Thread(target=run_server, daemon=True)
+    print("  🟢 Starting API backend (port 8000)...")
+    server_thread.start()
+    
+    # Wait for server to come up
+    time.sleep(2)
+    
+    react_url = "http://localhost:5173"
+    print(f"\n  🌐 God Mode Premium React UI: {react_url}")
+    print("     (Ensure 'npm run dev' is running in the /ui folder)")
+    
+    try:
+        print(f"  🚀 Launching browser to {react_url}...")
+        webbrowser.open(react_url)
+    except Exception as e:
+        print(f"  ⚠️  Could not automatically open browser: {e}")
+    
+    print("\n  💡 To use the legacy Streamlit UI, run: python -m agent --ui")
+    
+    # Stay alive while server thread is running
+    try:
+        while server_thread.is_alive():
+            time.sleep(1)
+    except KeyboardInterrupt:
+        print("\n👋 God Mode stopped.")
+
+# ── Entry Point ──────────────────────────────────────────────────
 
 # ── Entry Point ──────────────────────────────────────────────────
 
 def main():
     parser = argparse.ArgumentParser(
-        prog="agent",
+        prog="god-mode",
         description=f"God Mode Agent v{VERSION} — Deterministic Dev Agent",
     )
+    
+    # Create subparsers for 'start' command vs positional task
+    subparsers = parser.add_subparsers(dest="command", help="Available commands")
+    
+    # Start command
+    start_parser = subparsers.add_parser("start", help="Start the God Mode server and UI")
+    
+    # Run command (explicit passing of task)
+    run_parser = subparsers.add_parser("run", help="Run a specific task")
+    run_parser.add_argument("run_task", help="Task to execute")
+    
+    # Original arguments (we keep these on the main parser for backward compat)
     parser.add_argument(
         "task", nargs="?", default=None,
         help="Task to execute, e.g. 'Fix the bug in auth module'",
@@ -571,25 +639,38 @@ def main():
 
     args = parser.parse_args()
 
+    args = parser.parse_args()
+
+    if args.command == "start":
+        run_start()
+        sys.exit(0)
+        
+    # Handle explicit 'run' command
+    task_to_run = args.run_task if args.command == "run" else args.task
+
     if args.self_test:
         success = run_self_test()
         sys.exit(0 if success else 1)
     elif args.scan:
         run_scan(args.scan)
     elif args.classify:
-        run_classify(args.classify)
+        run_classify(args.classify, repo_path=args.repo)
     elif args.interactive:
         run_chat(repo_path=args.repo)
     elif args.ui:
         run_web_ui(repo_path=args.repo)
     elif args.legacy_repl:
         run_interactive_legacy(repo_path=args.repo)
-    elif args.task:
+    elif task_to_run:
+        should_rollback = not args.no_rollback
+        if not args.yes:
+            should_rollback = False
+
         success = run_full_pipeline(
-            args.task, repo_path=args.repo,
+            task_to_run, repo_path=args.repo,
             dry_run=args.dry_run, yes=args.yes,
             auto_commit=args.commit,
-            rollback_on_fail=not args.no_rollback,
+            rollback_on_fail=should_rollback,
         )
         sys.exit(0 if success else 1)
 

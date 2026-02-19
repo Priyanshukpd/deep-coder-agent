@@ -8,6 +8,9 @@ dependencies = ["together>=1.0"]
 [project.optional-dependencies]
 dev = ["pytest>=8.0", "pytest-asyncio>=0.23"]
 
+[project.scripts]
+god-mode = "agent.cli:main"
+
 [build-system]
 requires = ["setuptools>=68.0"]
 build-backend = "setuptools.backends._legacy:_Backend"

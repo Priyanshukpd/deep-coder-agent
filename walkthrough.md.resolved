@@ -104,13 +104,14 @@ Step 12 → Auto-Git Commit ([god-mode-agent] summary)
 - **Direct Shell Support**: Enabled the Agent to use `mv`, `rm`, `cp`, and `mkdir` directly in `run_commands` instead of writing scripts.
 - **Efficiency**: Verified autonomous cleanup of files using direct shell execution.
 
-### Phase 26: Reactive Feedback Loop
-- **Mid-execution Course Correction**: Enabled mid-execution natural language "course corrections" and re-planning.
-
-### Phase 27: React Evolution ⚛️
-- **Decoupled UI**: Built a FastAPI backend (`agent/server.py`) and a Vite + React frontend (`ui/`).
-- **Premium UX**: Implemented a glassmorphic interface with real-time mode toggles and status badges.
-- **Verification**: Verified via `npm run build` and backend connectivity check.
+- **Phase 26: Reactive Feedback Loop**: Enabled mid-execution natural language "course corrections" and re-planning.
+- **Phase 27: React Evolution**: Decoupled UI with FastAPI backend and Vite+React frontend for a scalable, premium experience.
+- **Phase 28: Smarter Self-Correction**: Implemented stateful `fix_history` in the Agent's repair loop, preventing it from repeating the same failed code fixes.
+- **Phase 29: Chain-of-Thought Autonomy**: Empowered the LLM to output a `🧠 Analysis` block prior to all coding and fixing operations, significantly improving project-awareness and preventing hallucinated fixes.
+- **Phase 30: Context-Aware Intent Routing**: Injected real-time repository discovery logs (stack type, file counts) directly into the Intent Classifier LLM array, and enforced strict abort guardrails against vague single-line inputs during `--yes` automation runs.
+- **Phase 31: End-to-End Planning Intelligence**: Upgraded the core JSON `PLANNING_PROMPT` to mandate full architectural inspection before creating execution plans. The prompt now injects a flat list of the top 200 repository files into context *before* the planner acts, allowing the LLM to autonomously detect files like `ui.tsx` or `login.py` instead of hallucinating new creations.
+- **Phase 32: Intelligent Early Stopping**: Added an `AbortFixLoopException` driven by an `@ABORT: <reason>` semantic token inside the `<analysis>` block, granting the LLM the capability to permanently break out of the 7-attempt fix retry loop if it determines an error is fundamentally unfixable (e.g., missing dependencies or impossible constraints).
+- **Phase 33: React UI Real-Time Execution Streaming**: Patched the FastAPI backend's `sys.stdout` directly to queue strings into an Server-Sent Events (SSE) `/api/stream/` endpoint. Updated the React Frontend UI with `EventSource` to receive these events, thereby streaming exact terminal outputs into a sleek scrolling terminal box directly inside the web UI matching GitHub Copilot/Windsurf functionality!
 
 ### Phase 1-13 Polish (Robustness) 💎
 - **Active Debugging**: Auto-run inspectors/crawlers on error -> feed logs to LLM.

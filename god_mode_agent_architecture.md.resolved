@@ -265,3 +265,5 @@ Step 12: AUTO-GIT COMMIT ──→ [On success: git add + commit "[god-mode-agen
 | **Reactive Feedback Loop** | Real-time course correction and re-planning via CLI & Web interaction. |
 | **Premium Web UI** | Pulsatile God Mode indicators and mode-aware chat decorators. |
 | **Decoupled Architecture** | REST API (`agent/server.py`) + React Frontend (`ui/`) for scalability. |
+| **Stateful Auto-Healing** | Tracks code manipulation history during verification fixes to eliminate cyclic error regressions. |
+| **Chain-of-Thought Autonomy** | Explicitly forces LLM reasoning (`<analysis>`) prior to code generation & repair, streamed dynamically to `stdout`. |

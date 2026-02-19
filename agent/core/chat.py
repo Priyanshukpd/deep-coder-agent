@@ -35,23 +35,22 @@ IMPORTANT: You must decide how to respond to each user message. Respond with a J
   "mode": "CHAT" or "ACTION",
   "message": "Your conversational response to the user",
   "action": null or {
-    "type": "generate" | "fix" | "modify" | "run",
+    "type": "generate" | "fix" | "modify" | "run" | "research",
     "task": "Clear task description for the executor",
     "run_command": "optional shell command to run"
   }
 }
 
 Guidelines:
-- Use "CHAT" mode for questions, explanations, clarifications, greetings
-- Use "ACTION" mode when the user wants you to write/change/fix code or run something
-- In ACTION mode, still provide a "message" explaining what you're about to do
-- The "task" in ACTION should be a clear, specific instruction for code generation
-- Include the target language/framework in the task if the user specifies one
-- If the user's request is vague, use CHAT mode to ask for clarification
-- Reference previous conversation context when relevant
-- Keep messages concise and helpful
+- Use "CHAT" mode for simple questions, greetings, or quick confirmations AFTER you have gathered enough information.
+- Use "ACTION" with type "research" when the user asks for explanations, codebase structure, or deep logic analysis. 
+- PROACTIVE AGENTIC BEHAVIOR: If you are asked to "explain the code" or "how does X work", do NOT just answer from the file tree. You MUST trigger an "ACTION" of type "research" first. 
+- You will receive the research findings in the next turn. Use those findings to provide a detailed, accurate response in "CHAT" mode.
+- In ACTION mode, your "message" should say something like "I'll analyze the code to give you a detailed answer."
+- Never promise to do something in CHAT mode that you aren't actually triggering an ACTION for.
 
-CRITICAL: Output ONLY the JSON block. No markdown fences, no extra text."""
+CRITICAL: Output ONLY the JSON block. No markdown fences, no extra text.
+"""
 
 
 CONTEXT_TEMPLATE = """
@@ -210,31 +209,68 @@ class ChatSession:
             return ChatResponse(mode="CHAT", message=text)
 
     def _send(self, user_msg: str) -> ChatResponse:
-        """Send a message and get a parsed response."""
-        # Add user message to history
+        """Single-turn send (legacy, but kept for simplicity)."""
+        return self._send_agentic(user_msg)
+
+    def _send_agentic(self, user_msg: str) -> ChatResponse:
+        """
+        Multi-turn agentic send:
+        RESEARCH -> EXECUTE -> SYNTHESIZE -> RESPOND
+        """
+        # 1. Add user message
         self._messages.append(ChatMessage(
             role="user",
             content=user_msg,
             timestamp=datetime.now().isoformat(),
         ))
 
-        # Build and send
-        llm_messages = self._build_llm_messages()
-        result = self._provider.complete(llm_messages)
+        max_turns = 3
+        current_turn = 0
+        
+        last_response = None
+        
+        while current_turn < max_turns:
+            current_turn += 1
+            
+            # 2. Build and call
+            llm_messages = self._build_llm_messages()
+            result = self._provider.complete(llm_messages)
+            response = self._parse_response(result.content)
+            
+            # 3. Add to history
+            self._messages.append(ChatMessage(
+                role="assistant",
+                content=response.message,
+                timestamp=datetime.now().isoformat(),
+                action_taken=response.action.type if response.action else None,
+            ))
+            
+            last_response = response
 
-        # Parse response
-        response = self._parse_response(result.content)
+            # 4. Handle Actions
+            if response.mode == "ACTION" and response.action:
+                print(f"  🎬 Agent triggers action: {response.action.type}")
+                action_res = self._execute_action(response.action)
+                
+                # feedback to LLM
+                self._messages.append(ChatMessage(
+                    role="system",
+                    content=f"Observation from {response.action.type} action:\n{action_res}",
+                    timestamp=datetime.now().isoformat(),
+                ))
+                
+                # If it's research, we MUST have another turn to explain
+                if response.action.type == "research":
+                    continue
+                
+                # For code changes, we return the plan and let the server handle it (legacy)
+                # But here we return so server can show the box
+                return response
 
-        # Add assistant response to history
-        self._messages.append(ChatMessage(
-            role="assistant",
-            content=response.message,
-            timestamp=datetime.now().isoformat(),
-            action_taken=response.action.type if response.action else None,
-        ))
+            # 5. If it's just CHAT, we are done
+            return response
 
-        self._turn_count += 1
-        return response
+        return last_response
 
     # ── Action Execution ─────────────────────────────────────
 
@@ -250,6 +286,14 @@ class ChatSession:
         # Hook up interactive approval if enabled
         if self.interactive_mode:
              executor.set_approval_callback(self._approval_handler)
+
+        if action.type == "research":
+            # Just perform deep research and return the context
+            research_notes = executor._research_task(action.task)
+            if research_notes:
+                return f"🧠 **Research Findings:**\n\n{research_notes[:3000]}..."
+            else:
+                return "Failed to find relevant files for research."
 
         if action.type == "run":
 

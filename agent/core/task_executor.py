@@ -42,8 +42,10 @@ from agent.core.process_manager import ProcessManager, ProcessInfo
 from agent.planning.memory import ArchitectureMemory
 from agent.tools.security_advisor import SecurityAdvisor
 
-MAX_FIX_ATTEMPTS = 3
+MAX_FIX_ATTEMPTS = int(os.environ.get("GOD_MODE_MAX_FIX_ATTEMPTS", "7"))
 
+class AbortFixLoopException(Exception):
+    """Raised when the LLM explicitly aborts a fix attempt."""
 
 @dataclass
 class FileAction:
@@ -82,66 +84,7 @@ class ExecutionPlan:
     db_migrate_command: str = ""   # e.g. "python manage.py migrate", "npx prisma migrate dev"
     db_seed_command: str = ""      # e.g. "python manage.py loaddata", "npx prisma db seed"
     visual_verification: str = ""  # e.g. "Check if the login form is centered and has a blue button"
-
-
-
-PLAN_SYSTEM_PROMPT = """You are a senior software engineer. You are given a task and context about a repository.
-
-Your job is to create a detailed execution plan as a JSON object with this schema:
-{
-  "summary": "Brief description of what you'll do",
-  "stack": "python",
-  "dependencies": ["list", "of", "packages", "needed"],
-  "install_command": "pip install -q <deps>",
-  "compile_command": "",
-  "lint_command": "python -m py_compile <file>",
-  "files": [
-    {
-      "path": "relative/path/to/file",
-      "action": "create",
-      "description": "What this file does"
-    }
-  ],
-  "run_command": "python main.py",
-  "background_processes": ["npm run start:api", "python server.py"],
-  "db_migrate_command": "",
-  "db_seed_command": "",
-  "test_command": "python -m pytest tests/",
-  "visual_verification": "Check that the header is blue"
-}
-
-Rules:
-
-Rules:
-- Only output valid JSON, no markdown or explanation
-- Use relative paths from the repo root
-- action must be "create", "modify", or "delete"
-- Be specific about what each file does
-- stack: the primary technology (python, java, node, go, rust, dart, docker, etc.)
-- dependencies: list ALL packages/libraries needed
-- install_command: FULL shell command to install dependencies (e.g. 'pip install torch transformers', 'npm install express cors', 'go mod tidy', or empty string if none needed)
-- compile_command: shell command to compile if needed (e.g. 'javac -cp . Main.java', 'go build', 'cargo build') or empty string
-- lint_command: shell command to check syntax (e.g. 'python -m py_compile file.py', 'javac -Xlint:all File.java', 'npx tsc --noEmit') or empty string
-- run_command: the shell command to run/verify the code works (e.g. 'python main.py', 'java Main', 'node index.js', 'go run main.go', 'docker-compose up --build')
-- background_processes: list commands that must run in parallel and NOT block (e.g. starting servers 'python app.py', 'npm start'). These run BEFORE run_command.
-- run_commands: OPTIONAL list of multiple commands to run in sequence (e.g. ['npm install', 'npm run seed', 'npm start']). Use this if the task requires multiple steps. If provided, run_command is ignored.
-- test_command: command to run tests (leave empty string if no tests exist)
-- You can use ANY language or framework (Python, Java, Node.js, Go, Rust, Flutter, React, Django, Flask, FastAPI, Spring Boot, Express, Docker, etc.)
-- Choose the best technology for the task if not specified"""
-
-STACK_DETECTION_PROMPT = """Analyze the file listing and file contents to identify the technology stack.
-
-Context:
-- Primary file list (first 100 files)
-- Key configuration files (if any)
-
-Output a JSON object with this schema:
-{
-  "primary_language": "python",
-  "frameworks": ["django", "react"],
-  "recommended_profile": "python" // one of [python, java, node, go, rust, dart, docker, polyglot, generic]
-}
-"""
+    is_complete: bool = True       # Whether the task is fully finished or needs follow-up
 
 RELEVANCE_PROMPT = """Analyze the file list and the task. Identify the top 5-10 files that are most likely to contain the logic relevant to the task, or files that need to be modified.
 
@@ -183,14 +126,17 @@ You are given:
 1. The original task
 2. The code that was generated
 3. The error that occurred when running it
+4. Any relevant project context and past failure history
 
 Your job is to output the COMPLETE FIXED code for the file.
 
 Rules:
-- Output ONLY the raw source code, no markdown fences, no explanation
-- Fix the root cause, not just the symptom
-- Keep all existing functionality
-- The code must be runnable end-to-end"""
+- You MUST explicitly analyze the root cause of the error before generating code.
+- Begin your response with an <analysis> block diagnosing why the previous code failed in this specific project context.
+- If you realize this error is fundamentally unfixable (e.g., missing dependencies, impossible constraints, or completely broken architecture), explicitly abort by writing `@ABORT: <reason>` inside your `<analysis>` block and DO NOT output any code.
+- Then, provide the COMPLETE FIXED code in a markdown code block (```...```).
+- Output ONLY the complete source code inside the markdown block, no explanations outside of <analysis>.
+- Fix the root cause, not just the symptom. Keep all existing functionality."""
 
 
 class TaskExecutor:
@@ -246,6 +192,29 @@ class TaskExecutor:
         if feedback:
             self._accumulated_feedback.append(feedback)
             logger.info(f"Feedback added: {feedback}")
+
+    def _extract_result(self, content: str) -> tuple[str, str]:
+        """Extracts the generated code and the CoT <analysis> block (if any)."""
+        import re
+        analysis = ""
+        analysis_match = re.search(r"<analysis>\s*(.*?)\s*</analysis>", content, flags=re.DOTALL | re.IGNORECASE)
+        if analysis_match:
+            analysis = analysis_match.group(1)
+            
+        code = content
+        code_blocks = re.findall(r"```[a-zA-Z0-9_-]*\n(.*?)```", content, flags=re.DOTALL)
+        if code_blocks:
+            code = code_blocks[-1]
+        else:
+            clean_content = re.sub(r"<analysis>.*?</analysis>", "", content, flags=re.DOTALL | re.IGNORECASE).strip()
+            if clean_content.startswith("```"):
+                code = clean_content.split("\n", 1)[1]
+                if "```" in code:
+                    code = code.rsplit("```", 1)[0]
+            else:
+                code = clean_content
+
+        return code.strip(), analysis.strip()
     
     def _request_approval(self, stage: str, details: str) -> Any:
         """Request user approval for a step. Returns True, False, or a feedback string."""
@@ -557,7 +526,13 @@ class TaskExecutor:
         # Read content of relevant files
         context_parts = []
         context_parts.append(f"Repository: {self._repo_path}\n")
-        context_parts.append(f"Selected relevant files for task '{task}':")
+        
+        context_parts.append("Project Structure (First 200 files):")
+        for f in candidates[:200]:
+            context_parts.append(f"  - {f}")
+        context_parts.append("\n")
+
+        context_parts.append(f"Selected relevant file contents for task '{task}':")
         
         for rel_path in relevant:
              full_path = os.path.join(self._repo_path, rel_path)
@@ -571,7 +546,41 @@ class TaskExecutor:
         
         return "\n".join(context_parts)
 
-    def generate_plan(self, task: str) -> ExecutionPlan:
+    def _research_task(self, task: str) -> str:
+        """Deeply research the task by reading relevant files before planning."""
+        print(f"\n🧠 Researching codebase for task: '{task}'...")
+        
+        candidates = []
+        for root, _, files in os.walk(self._repo_path):
+             if any(part.startswith('.') for part in root.split(os.sep)):
+                 continue
+             for f in files:
+                 candidates.append(os.path.relpath(os.path.join(root, f), self._repo_path))
+        
+        # 1. Identify key files via LLM
+        relevant = self._select_relevant_files(task, candidates)
+        
+        # 2. Augment with Knowledge Graph
+        self._ensure_knowledge_graph()
+        if self._knowledge_graph:
+            related = self._knowledge_graph.get_related_files(relevant)
+            relevant = list(set(relevant) | set(related))
+
+        # 3. Read content
+        research_notes = []
+        for rel_path in relevant[:10]: # Cap at 10 files for research
+             full_path = os.path.join(self._repo_path, rel_path)
+             if os.path.exists(full_path):
+                 try:
+                     with open(full_path, 'r', errors='replace') as fh:
+                         content = fh.read(4000) # Read first 4k symbols
+                     research_notes.append(f"### {rel_path}\n{content}")
+                     print(f"  🔍 Read: {rel_path}")
+                 except Exception: pass
+        
+        return "\n\n".join(research_notes)
+
+    def generate_plan(self, task: str, research_notes: str = "") -> ExecutionPlan:
         """Use LLM to generate an execution plan."""
         # Use smart context loading
         context = self._read_smart_context(task)
@@ -597,19 +606,29 @@ class TaskExecutor:
                 feedback_context += f"{i}. {fb}\n"
             feedback_context += "\nIMPORTANT: Incorporate the above feedback into your plan. If it contradicts the original task, the feedback takes priority."
 
+        research_context = ""
+        if research_notes:
+            research_context = f"\n\n### RESEARCH NOTES (Key file contents):\n{research_notes}"
+
         messages = [
             {"role": "system", "content": self.prompt_manager.get_system_prompt("PLANNING")},
             {"role": "user", "content": (
-                f"Task: {task}{stack_hint}{feedback_context}"
+                f"Task: {task}{stack_hint}{feedback_context}{research_context}"
                 f"\n\nRepository context:\n{context}"
             )},
         ]
 
         logger.info("Generating execution plan via LLM...")
         result = self._provider.complete(messages)
+        
+        text = result.content.strip()
+        text, analysis = self._extract_result(text)
+        if analysis:
+            print(f"\n  🧠 Planning Analysis:", flush=True)
+            for line in analysis.split('\n'):
+                print(f"    {line}", flush=True)
 
         try:
-            text = result.content.strip()
             # Robust JSON extraction: look for the first '{' and last '}'
             import re as _json_re
             match = _json_re.search(r'(\{.*\})', text, _json_re.DOTALL)
@@ -638,6 +657,7 @@ class TaskExecutor:
             background_processes=plan_data.get("background_processes", []),
             db_migrate_command=plan_data.get("db_migrate_command", ""),
 
+            is_complete=plan_data.get("is_complete", True),
             db_seed_command=plan_data.get("db_seed_command", ""),
             visual_verification=plan_data.get("visual_verification", ""),
         )
@@ -701,10 +721,13 @@ class TaskExecutor:
         logger.info(f"Generating code for {file_action.path}...")
         result = self._provider.complete(messages)
 
-        code = result.content.strip()
-        if code.startswith("```"):
-            code = code.split("\n", 1)[1]
-            code = code.rsplit("```", 1)[0]
+        code, analysis = self._extract_result(result.content)
+        if analysis:
+            print(f"\n  🧠 Analysis [{file_action.path}]:", flush=True)
+            for line in analysis.split('\n'):
+                print(f"    {line}", flush=True)
+        else:
+            print(f"\n  ⚠️  No analysis block found from LLM.", flush=True)
         return code
 
     # ── File Operations ─────────────────────────────────────────────
@@ -1008,14 +1031,14 @@ class TaskExecutor:
     # ── Self-Correction ─────────────────────────────────────────────
 
     def fix_error(self, task: str, file_action: FileAction,
-                  error: str, plan: ExecutionPlan) -> str:
+                  error: str, plan: ExecutionPlan, fix_history: list[dict] = None) -> str:
         """Use LLM to fix a broken file given the error output."""
         context = self._read_repo_context()
 
         # Checkpoint: Fix Strategy
         if not self._request_approval("fix", f"Error encountered in {file_action.path}:\n{error[:200]}...\nAttempting auto-fix {self.fix_attempts_used + 1}/{MAX_FIX_ATTEMPTS}"):
             logger.warning("Auto-fix rejected by user.")
-            return code # Return original code
+            return file_action.content # Return original code
 
         # User feedback injection
         feedback_context = ""
@@ -1024,6 +1047,21 @@ class TaskExecutor:
             for i, fb in enumerate(self._accumulated_feedback, 1):
                 feedback_context += f"{i}. {fb}\n"
             feedback_context += "\nIMPORTANT: Incorporate the above feedback into the fix."
+
+        history_context = ""
+        if fix_history:
+            history_context = "\n\n### PAST FAILURES (AVOID REPEATING THESE MISTAKES):\n"
+            for i, attempt in enumerate(fix_history, 1):
+                history_context += f"Attempt {i} (File: {attempt.get('file', 'Unknown')}):\nError encountered:\n```\n{attempt['error']}\n```\nCode that caused it:\n```\n{attempt['code']}\n```\n"
+            history_context += "\nCRITICAL: Do not provide the same code that caused the errors above! Analyze why it failed and try a completely different approach. Return ONLY the complete fixed source code, no explanations."
+
+        # Provide context of other files modified in this task
+        plan_files_context = ""
+        for fa in plan.files:
+            if fa.path != file_action.path and fa.content:
+                plan_files_context += f"\n--- {fa.path} (Generated in this task) ---\n```\n{fa.content}\n```\n"
+        if plan_files_context:
+            plan_files_context = f"\n\n### OTHER FILES GENERATED IN THIS TASK:\n{plan_files_context}\n(Use these to context-check imports, functions, or variable names)"
 
         lang = self._stack_profile.code_prompt_language if self._stack_profile else "Python"
         messages = [
@@ -1035,7 +1073,9 @@ class TaskExecutor:
                 f"Error when running `{plan.run_command}`:\n"
                 f"```\n{error}\n```\n\n"
                 f"Repository context:\n{context}\n\n"
-                f"Fix the code. Output ONLY the complete fixed source code."
+                f"{plan_files_context}"
+                f"\nFix the code. Output ONLY the complete fixed source code."
+                f"{history_context}"
                 f"{self._gather_diagnostics(error)}"
             )},
         ]
@@ -1043,10 +1083,18 @@ class TaskExecutor:
         logger.info(f"Asking LLM to fix {file_action.path}...")
         result = self._provider.complete(messages)
 
-        code = result.content.strip()
-        if code.startswith("```"):
-            code = code.split("\n", 1)[1]
-            code = code.rsplit("```", 1)[0]
+        code, analysis = self._extract_result(result.content)
+        if analysis:
+            print(f"\n  🧠 Fix Analysis [{file_action.path}]:", flush=True)
+            for line in analysis.split('\n'):
+                print(f"    {line}", flush=True)
+                
+            import re
+            abort_match = re.search(r'@ABORT:\s*(.*)', analysis)
+            if abort_match:
+                raise AbortFixLoopException(abort_match.group(1).strip())
+        else:
+            print(f"\n  ⚠️  No analysis block found from LLM in fix_error.", flush=True)
         return code
 
     def _gather_diagnostics(self, error: str) -> str:
@@ -1177,9 +1225,9 @@ class TaskExecutor:
     def execute(self, task: str) -> ExecutionPlan:
         """
         Full agentic loop with hardened execution:
-            Kill Switch -> Plan -> Freeze Envelope -> Supply Chain Check ->
+            Kill Switch -> Research -> Plan -> Freeze Envelope -> Supply Chain Check ->
             Task Isolation -> Write Code -> Secrets Scan -> Lint Check ->
-            Install Deps -> Run -> Self-Correct -> Verify -> Enforce Plan -> Done
+            Install Deps -> Run -> Self-Correct -> Verify -> Enforce Plan -> [Repeat if not complete] -> Done
         """
         # ── Lazy imports (avoid circular deps at module level) ──
         from agent.security.kill_switch import KillSwitch
@@ -1192,7 +1240,10 @@ class TaskExecutor:
         from agent.planning.plan_enforcer import PlanEnforcer
         from agent.core.knowledge_graph import KnowledgeGraph
 
-        # ── Step 0: Arm kill switch (adaptive) ──
+        # ── Step 0: Research ──
+        research_notes = self._research_task(task)
+
+        # ── Step 0b: Arm kill switch (adaptive) ──
 
         # Use detected stack (if any) or default
         stack_name = self._detect_stack(task).name
@@ -1202,18 +1253,37 @@ class TaskExecutor:
         print(f"  🛡️  Kill switch armed ({timeout_min:.0f}m timeout for '{stack_name}')")
 
         try:
-            plan = self._execute_inner(
-                task, kill_switch,
-                PlanEnvelopeValidator, SupplyChainChecker,
-                TaskIsolation, SecretsPolicy,
-                BoundedLSPLoop, VerificationPipeline, VerifyTier,
-                PlanEnforcer,
-            )
-            
-            # Update memory on success
-            if self.last_run_success:
-                 Thread(target=self._memory.update, args=(task, plan.summary)).start()
-                 
+            current_task = task
+            total_turns = 0
+            MAX_TURNS = 5 # Prevent infinite loops
+
+            while total_turns < MAX_TURNS:
+                total_turns += 1
+                if total_turns > 1:
+                    print(f"\n🔄 --- CONTINUING TASK (Turn {total_turns}/{MAX_TURNS}) ---")
+                    # Refresh research for the next step
+                    research_notes = self._research_task(current_task)
+
+                plan = self._execute_inner(
+                    current_task, kill_switch,
+                    PlanEnvelopeValidator, SupplyChainChecker,
+                    TaskIsolation, SecretsPolicy,
+                    BoundedLSPLoop, VerificationPipeline, VerifyTier,
+                    PlanEnforcer,
+                    research_notes=research_notes
+                )
+                
+                # Update memory on success
+                if self.last_run_success:
+                     Thread(target=self._memory.update, args=(current_task, plan.summary)).start()
+                
+                if not self.last_run_success or plan.is_complete:
+                    break
+                
+                # Prepare for next turn
+                print(f"\n📍 Phase complete, but task is not finished. Re-planning...")
+                current_task = f"{task}\n\nCompleted so far: {plan.summary}"
+                
             return plan
         finally:
             kill_switch.disarm()
@@ -1223,7 +1293,7 @@ class TaskExecutor:
                        PlanEnvelopeValidator, SupplyChainChecker,
                        TaskIsolation, SecretsPolicy,
                        BoundedLSPLoop, VerificationPipeline, VerifyTier,
-                       PlanEnforcer) -> ExecutionPlan:
+                       PlanEnforcer, research_notes: str = "") -> ExecutionPlan:
         """Inner execute with kill switch guard."""
 
         # ── Step 0b: Detect stack ──
@@ -1232,7 +1302,7 @@ class TaskExecutor:
 
         # ── Step 1: Generate plan (with interactive refinement) ──
         while True:
-            plan = self.generate_plan(task)
+            plan = self.generate_plan(task, research_notes=research_notes)
 
             print(f"\n📋 Plan: {plan.summary}")
             print(f"🏗️  Stack: {plan.stack or self._stack_profile.name}")
@@ -1515,6 +1585,7 @@ class TaskExecutor:
 
                 # ── Step 9: Self-correction loop (only for the last/main command) ──
                 attempt = 0
+                fix_history = []
                 while not run_result.success and attempt < MAX_FIX_ATTEMPTS:
                     ks_state = kill_switch.check()
                     if ks_state:
@@ -1530,7 +1601,15 @@ class TaskExecutor:
                     main_file = self._identify_error_file(error_text, plan)
 
                     if main_file:
-                        fixed_code = self.fix_error(task, main_file, error_text, plan)
+                        try:
+                            fixed_code = self.fix_error(task, main_file, error_text, plan, fix_history=fix_history)
+                        except AbortFixLoopException as e:
+                            print(f"\n  🛑 Agent explicitly aborted fix loop: {e}")
+                            self.last_run_success = False
+                            self.last_error = f"Agent explicitly aborted fix loop: {e}"
+                            return plan
+
+                        fix_history.append({"file": main_file.path, "error": error_text, "code": fixed_code})
 
                         secret_matches = secrets.scan(fixed_code)
                         if secret_matches:
@@ -1605,6 +1684,7 @@ class TaskExecutor:
                         and f.action != "delete"]
 
         verify_attempt = 0
+        verify_history = []
         while verify_attempt <= MAX_FIX_ATTEMPTS:
             report = pipeline.run(files=source_files)
             print(report.summary())
@@ -1637,32 +1717,33 @@ class TaskExecutor:
             # 2. Identify likely culprit
             main_file = self._identify_error_file(failed_output, plan)
             
-            if main_file:
-                 pass
-            else:
+            if not main_file:
                  # Fallback: if we can't find a file in the stack trace, 
                  # pick the file that is being tested (if possible) or the first modified file.
-                 # For now, just try the first modified file in the plan as a last resort heuristic.
                  candidates = [f for f in plan.files if f.action != "delete"]
                  if candidates:
                      main_file = candidates[0]
                      print(f"  ⚠️  Could not pinpoint file from error. Guessing: {main_file.path}")
 
             if main_file:
-                 fixed_code = self.fix_error(task, main_file, failed_output, plan)
+                 try:
+                     fixed_code = self.fix_error(task, main_file, failed_output, plan, fix_history=verify_history)
+                 except AbortFixLoopException as e:
+                     print(f"\n  🛑 Agent explicitly aborted verification loop: {e}")
+                     self.last_run_success = False
+                     self.last_error = f"Agent explicitly aborted verification loop: {e}"
+                     break
+
+                 verify_history.append({"file": main_file.path, "error": failed_output, "code": fixed_code})
                  
-                 # Redact & Write
-                 # (Re-using secrets policy from outer scope if strictly needed, 
-                 # but for simplicity we assume fix_error output is mostly safe or we accept risk here to keep code simple)
-                 # Wait, use `secrets` from outer scope? It is defined in Step 5. 
-                 # It might be safer to re-init specific policy or just write.
-                 # Let's write directly but check secrets if possible.
-                 
-                 # Simplest valid implementation:
+                 secret_matches = secrets.scan(fixed_code)
+                 if secret_matches:
+                     fixed_code = secrets.redact(fixed_code)
+                     
                  self._write_file(main_file, fixed_code)
                  lines = len(fixed_code.split('\n'))
-                 print(f"  📝 Rewrote: {main_file.path} ({lines} lines)")
-                 
+                 print(f"  📝 Applied Verification Fix: {main_file.path} ({lines} lines)")
+
                  # Recompile if needed
                  if plan.compile_command:
                      print(f"  🔨 Re-compiling...")

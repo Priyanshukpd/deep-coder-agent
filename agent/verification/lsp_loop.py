@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import subprocess
 import logging
+import os
 from dataclasses import dataclass, field
 from enum import Enum, auto
 from typing import Optional
@@ -20,8 +21,8 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 
 
-# Architecture §1: Retries: 3 (Syntax/Lint only)
-MAX_SYNTAX_RETRIES = 3
+# Architecture §1: Retries limit, defaults to 7
+MAX_SYNTAX_RETRIES = int(os.environ.get("GOD_MODE_MAX_FIX_ATTEMPTS", "7"))
 
 
 class FailureType(Enum):

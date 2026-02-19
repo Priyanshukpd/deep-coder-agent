@@ -79,8 +79,9 @@ Intent types:
 Rules:
 1. Always call the classify_intent function — never respond with plain text.
 2. Set confidence between 0.0 and 1.0 based on how clear the intent is.
-3. If the request is vague or could be multiple intents, set clarification_needed=true and suggest a disambiguating question.
-4. Keep reasoning concise (one sentence)."""
+3. If the request is COMPLETELY incomprehensible or contradictory, set clarification_needed=true.
+4. IMPORTANT: If the user asks for open-ended improvements (e.g., "make it better", "improve the UI", "refactor this"), DO NOT set clarification_needed=true. The agent is smart enough to autonomously analyze the code and infer improvements. Classify these as 'feature' or 'refactor' with high confidence.
+5. Keep reasoning concise (one sentence)."""
 
 
 # -- Intent Enum Mapping --
@@ -114,7 +115,7 @@ class IntentClassifier:
         self.confidence_threshold = confidence_threshold
         self.provider = provider
 
-    def classify(self, user_input: str) -> IntentResult:
+    def classify(self, user_input: str, repo_context: str = "") -> IntentResult:
         """
         Classify the user input into an IntentResult.
 
@@ -124,23 +125,27 @@ class IntentClassifier:
         """
         if self.provider is not None:
             try:
-                return self._classify_with_llm(user_input)
+                return self._classify_with_llm(user_input, repo_context)
             except Exception as e:
                 logger.warning(f"LLM classification failed, falling back to heuristics: {e}")
 
-        return self._classify_with_heuristics(user_input)
+        return self._classify_with_heuristics(user_input, repo_context)
 
-    def _classify_with_llm(self, user_input: str) -> IntentResult:
+    def _classify_with_llm(self, user_input: str, repo_context: str = "") -> IntentResult:
         """
         LLM-powered classification using Together AI function calling.
 
         Uses tool_choice="required" to guarantee structured output.
         """
         from agent.core.llm_provider import LLMToolCallError
+        
+        user_content = user_input
+        if repo_context:
+            user_content += f"\n\n[Repository Context]\n{repo_context}"
 
         messages = [
             {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": user_input},
+            {"role": "user", "content": user_content},
         ]
 
         tool_result = self.provider.complete_with_tools(
@@ -181,7 +186,7 @@ class IntentClassifier:
             suggested_question=suggested_question if suggested_question else None,
         )
 
-    def _classify_with_heuristics(self, user_input: str) -> IntentResult:
+    def _classify_with_heuristics(self, user_input: str, repo_context: str = "") -> IntentResult:
         """
         Keyword-based fallback classifier.
 
