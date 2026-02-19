@@ -117,6 +117,8 @@ function App() {
       content: 'Working on it...',
       isLoading: true,
       logs: [],
+      currentStep: 'STARTING',
+      phases: [], // Array of { name: string, status: 'running' | 'done' }
       timestamp: new Date().toISOString()
     };
 
@@ -125,7 +127,20 @@ function App() {
     eventSource.onmessage = (event) => {
       try {
         const data = JSON.parse(event.data);
-        if (data.log) {
+        if (data.status) {
+          setMessages(prev => prev.map(msg => {
+            if (msg.id === tempMsgId) {
+              const prevPhases = msg.phases || [];
+              // If this is a new step, mark prev as done and add new
+              const updatedPhases = prevPhases.map(p => ({ ...p, status: 'done' }));
+              if (!updatedPhases.find(p => p.name === data.status)) {
+                updatedPhases.push({ name: data.status, status: 'running' });
+              }
+              return { ...msg, currentStep: data.status, phases: updatedPhases };
+            }
+            return msg;
+          }));
+        } else if (data.log) {
           setMessages(prev => prev.map(msg => {
             if (msg.id === tempMsgId) {
               return { ...msg, logs: [...(msg.logs || []), data.log] };
@@ -419,12 +434,49 @@ function App() {
                 {messages.map((msg, idx) => (
                   <div key={idx} className={`message ${msg.role} ${msg.isError ? 'error' : ''}`}>
                     <div className="message-content">
-                      {msg.content.split('\n').map((line, i) => <div key={i}>{line}</div>)}
-                      {msg.logs && msg.logs.length > 0 && (
-                        <div className="live-logs">
-                          {msg.logs.map((logLine, i) => <div key={i}>{logLine}</div>)}
+                      {msg.role === 'assistant' && (msg.phases || msg.logs?.length > 0) && (
+                        <div className="agent-execution-block">
+                          <details className="execution-status" open={msg.isLoading}>
+                            <summary>
+                              <div className={`status-summary ${msg.isLoading ? 'isLoading' : ''}`}>
+                                <span className="status-dot"></span>
+                                <span className="status-text">
+                                  {msg.isLoading ? `Agent is ${msg.currentStep || 'working'}...` : 'Execution Steps'}
+                                </span>
+                              </div>
+                            </summary>
+                            <div className="phase-stepper">
+                              {(msg.phases || []).map((p, i) => {
+                                const labels = {
+                                  'ANALYZING': 'Analyzing Requirements',
+                                  'RESEARCHING': 'Researching Codebase',
+                                  'PLANNING': 'Developing Plan',
+                                  'EXECUTING': 'Implementing Changes',
+                                  'SYNCING': 'Finalizing Logs',
+                                  'DONE': 'Task Complete'
+                                };
+                                return (
+                                  <div key={i} className={`phase-item ${p.status}`}>
+                                    <span className="phase-icon">
+                                      {p.status === 'done' ? '✅' : '⏳'}
+                                    </span>
+                                    {labels[p.name] || p.name}
+                                  </div>
+                                );
+                              })}
+                            </div>
+                            {msg.logs && msg.logs.length > 0 && (
+                              <div className="live-logs">
+                                {msg.logs.map((logLine, i) => <div key={i}>{logLine}</div>)}
+                              </div>
+                            )}
+                          </details>
                         </div>
                       )}
+
+                      <div className="bubble-text">
+                        {msg.content.split('\n').map((line, i) => <div key={i}>{line}</div>)}
+                      </div>
                     </div>
                     {msg.action && (
                       <div className="action-block">

@@ -215,7 +215,12 @@ async def stream_logs(session_id: str):
                     msg = q.get(block=False)
                     if msg is None:
                         break
-                    yield f"data: {json.dumps({'log': msg})}\n\n"
+                    
+                    if msg.startswith("ST_STEP:"):
+                        step_name = msg.replace("ST_STEP:", "").strip()
+                        yield f"data: {json.dumps({'status': step_name})}\n\n"
+                    else:
+                        yield f"data: {json.dumps({'log': msg})}\n\n"
                 except queue.Empty:
                     await asyncio.sleep(0.1)
         finally:

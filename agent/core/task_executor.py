@@ -1241,6 +1241,7 @@ class TaskExecutor:
         from agent.core.knowledge_graph import KnowledgeGraph
 
         # ── Step 0: Research ──
+        print("ST_STEP:RESEARCHING")
         research_notes = self._research_task(task)
 
         # ── Step 0b: Arm kill switch (adaptive) ──
@@ -1264,6 +1265,7 @@ class TaskExecutor:
                     # Refresh research for the next step
                     research_notes = self._research_task(current_task)
 
+                print("ST_STEP:PLANNING")
                 plan = self._execute_inner(
                     current_task, kill_switch,
                     PlanEnvelopeValidator, SupplyChainChecker,
@@ -1432,6 +1434,7 @@ class TaskExecutor:
             print(f"  ⚠️  Task isolation skipped ({e})")
 
         # ── Step 5: Generate and write code ──
+        print("ST_STEP:EXECUTING")
         print(f"\n⚡ Generating code...\n")
         secrets = SecretsPolicy(strict=False)  # Warn but don't block
 

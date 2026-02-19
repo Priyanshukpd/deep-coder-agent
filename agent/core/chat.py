@@ -233,6 +233,7 @@ class ChatSession:
             current_turn += 1
             
             # 2. Build and call
+            print("ST_STEP:ANALYZING")
             llm_messages = self._build_llm_messages()
             result = self._provider.complete(llm_messages)
             response = self._parse_response(result.content)
@@ -249,6 +250,11 @@ class ChatSession:
 
             # 4. Handle Actions
             if response.mode == "ACTION" and response.action:
+                if response.action.type == "research":
+                    print("ST_STEP:RESEARCHING")
+                else:
+                    print(f"ST_STEP:EXECUTING_{response.action.type.upper()}")
+                
                 print(f"  🎬 Agent triggers action: {response.action.type}")
                 action_res = self._execute_action(response.action)
                 
