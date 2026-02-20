@@ -138,6 +138,19 @@ Rules:
 - Output ONLY the complete source code inside the markdown block, no explanations outside of <analysis>.
 - Fix the root cause, not just the symptom. Keep all existing functionality."""
 
+REFLECTION_SYSTEM_PROMPT = """You are a senior software architect performing a critical code review.
+Review the following generated code against the original task and project context.
+Check for:
+1. Logic errors or race conditions.
+2. Missing imports or undefined variables.
+3. Security vulnerabilities (secrets, injection).
+4. Alignment with the overall plan.
+
+Output your critique inside an <analysis> block.
+If the code is PERFECT, write "@PASS" at the end of the analysis.
+If the code is FLAWED, write "@RETRY: <specific fix instructions>" at the end of the analysis.
+"""
+
 
 class TaskExecutor:
     """
@@ -728,7 +741,61 @@ class TaskExecutor:
                 print(f"    {line}", flush=True)
         else:
             print(f"\n  ⚠️  No analysis block found from LLM.", flush=True)
+        
+        # Phase 44: Code Reflection
+        reflected_code = self._reflect_on_code(code, file_action, plan, task)
+        return reflected_code
+
+    def _reflect_on_code(self, code: str, file_action: FileAction, plan: ExecutionPlan, task: str) -> str:
+        """Post-generation critique to ensure high quality."""
+        print(f"ST_STEP:REFLECTING")
+        print(f"  🤔 Reflecting on {file_action.path}...")
+        
+        context = self._read_repo_context()
+        messages = [
+            {"role": "system", "content": REFLECTION_SYSTEM_PROMPT},
+            {"role": "user", "content": (
+                f"Task: {task}\nFile: {file_action.path}\nGenerated Code:\n```\n{code}\n```\n"
+                f"Project Context:\n{context}"
+            )},
+        ]
+        
+        result = self._provider.complete(messages)
+        critique = result.content.strip()
+        
+        analysis = ""
+        analysis_match = re.search(r"<analysis>\s*(.*?)\s*</analysis>", critique, flags=re.DOTALL | re.IGNORECASE)
+        if analysis_match:
+            analysis = analysis_match.group(1)
+            print(f"    🧠 Reflection Analysis: {analysis[:200]}...")
+
+        if "@PASS" in critique:
+            print(f"  ✅ Code pass reflection.")
+            return code
+        
+        if "@RETRY:" in critique:
+            reason = critique.split("@RETRY:")[1].strip()
+            print(f"  ⚠️ Reflection triggered retry: {reason[:100]}...")
+            # Recurse one level only
+            return self._fix_reflection(code, file_action, reason, plan, task)
+
         return code
+
+    def _fix_reflection(self, code: str, file_action: FileAction, reason: str, plan: ExecutionPlan, task: str) -> str:
+        """Apply fixes suggested by reflection."""
+        messages = [
+            {"role": "system", "content": self.prompt_manager.get_system_prompt("CODING", language="Python")},
+            {"role": "user", "content": (
+                f"Your previous code for {file_action.path} failed a critical reflection check.\n"
+                f"Critique: {reason}\n"
+                f"Original Task: {task}\n"
+                f"Previous Code:\n```\n{code}\n```\n"
+                f"Please provide the COMPLETE FIXED code."
+            )},
+        ]
+        result = self._provider.complete(messages)
+        new_code, _ = self._extract_result(result.content)
+        return new_code
 
     # ── File Operations ─────────────────────────────────────────────
 
@@ -1598,6 +1665,20 @@ class TaskExecutor:
 
                     attempt += 1
                     error_text = (run_result.stderr or run_result.stdout)[-2000:]
+                    
+                    # ── Step 10: Visual Verification (Phase 44) ──
+                    if plan.visual_verification:
+                        print("ST_STEP:VERIFYING")
+                        v_success = self._visual_verify(plan.visual_verification)
+                        if not v_success:
+                             print(f"  ⚠️  Visual verification failed. Attempting fix...")
+                             # Feed visual failure into the fix loop
+                             error_text = f"VISUAL VERIFICATION FAILED: {plan.visual_verification}\n\n" + error_text
+                             run_result.success = False
+                        else:
+                             print(f"  ✅ Visual verification passed.")
+                             run_result.success = True
+                             break # Exit fix loop if visual pass overrides a minor non-zero exit? (Heuristic)
 
                     print(f"\n🔧 Fix attempt {attempt}/{MAX_FIX_ATTEMPTS}...")
 

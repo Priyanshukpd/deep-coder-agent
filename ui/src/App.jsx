@@ -4,6 +4,7 @@ import { oneLight } from 'react-syntax-highlighter/dist/esm/styles/prism'
 import './App.css'
 
 function App() {
+  const [theme, setTheme] = useState(() => localStorage.getItem('theme') || 'dark')
   const [session, setSession] = useState(null)
   const [messages, setMessages] = useState([])
   const [input, setInput] = useState("")
@@ -16,6 +17,14 @@ function App() {
   const [selectedFile, setSelectedFile] = useState(null)
   const [activeTab, setActiveTab] = useState('chat')
   const messagesEndRef = useRef(null)
+
+  useEffect(() => {
+    localStorage.setItem('theme', theme)
+  }, [theme])
+
+  const toggleTheme = () => {
+    setTheme(prev => prev === 'dark' ? 'light' : 'dark')
+  }
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" })
@@ -365,7 +374,7 @@ function App() {
   }
 
   return (
-    <div className={`app-container ${isInteractive ? 'interactive' : 'god-mode'}`}>
+    <div className={`app-container theme-${theme} ${isInteractive ? 'interactive' : 'god-mode'}`}>
       <header className="app-header">
         <div className="header-left">
           <div className="logo">🤖 God Mode</div>
@@ -373,9 +382,14 @@ function App() {
             {isInteractive ? "🤝 Co-Pilot Active" : "✨ God Mode Active"}
           </div>
         </div>
-        <button className="disconnect-btn" onClick={handleDisconnect}>
-          🔌 Disconnect
-        </button>
+        <div className="header-right">
+          <button className="theme-toggle-btn" onClick={toggleTheme} title="Switch Theme">
+            {theme === 'dark' ? '☀️' : '🌙'}
+          </button>
+          <button className="disconnect-btn" onClick={handleDisconnect}>
+            🔌 Disconnect
+          </button>
+        </div>
       </header>
 
       <div className="main-layout">
@@ -452,6 +466,8 @@ function App() {
                                   'RESEARCHING': 'Researching Codebase',
                                   'PLANNING': 'Developing Plan',
                                   'EXECUTING': 'Implementing Changes',
+                                  'REFLECTING': 'Refining Code Quality',
+                                  'VERIFYING': 'Visual Verification',
                                   'SYNCING': 'Finalizing Logs',
                                   'DONE': 'Task Complete'
                                 };
