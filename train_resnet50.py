@@ -53,7 +53,9 @@ def get_data_loaders(args):
         train_size = min(args.train_subset_size, len(train_dataset))
         val_size = min(args.val_subset_size, len(val_dataset))
         
-        train_indices = list(range(train_size))
+        # Use random indices for training subset
+        train_indices = torch.randperm(len(train_dataset))[:train_size].tolist()
+        # Use sequential indices for validation subset
         val_indices = list(range(val_size))
         
         train_dataset = Subset(train_dataset, train_indices)

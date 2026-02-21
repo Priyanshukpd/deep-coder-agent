@@ -3,7 +3,13 @@ name = "god-mode-agent"
 version = "0.1.0"
 description = "A deterministic orchestration system around a probabilistic model"
 requires-python = ">=3.11"
-dependencies = ["together>=1.0"]
+dependencies = [
+    "together>=1.0",
+    "torch>=2.0.0",
+    "torchvision>=0.15.0",
+    "tqdm>=4.65.0",
+    "numpy>=1.24.0"
+]
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0", "pytest-asyncio>=0.23"]
@@ -12,5 +18,5 @@ dev = ["pytest>=8.0", "pytest-asyncio>=0.23"]
 god-mode = "agent.cli:main"
 
 [build-system]
-requires = ["setuptools>=68.0"]
-build-backend = "setuptools.backends._legacy:_Backend"
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
