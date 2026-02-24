@@ -95,52 +95,45 @@ class CommandClassification:
     reasoning: str = ""
 
 
-def classify_command(command: str) -> CommandClassification:
+from agent.security.rule_engine import rule_engine, RuleTier
+from agent.security.governance import get_governance_manager
+
+def classify_command(command: str, repo_path: str = ".") -> CommandClassification:
     """
-    Classify a shell command into a safety tier.
-
-    Returns the classification with the policy to apply.
+    Classify a shell command into a safety tier using RuleEngine.
     """
-    stripped = command.strip()
+    res = rule_engine.check(command)
+    governance = get_governance_manager(repo_path)
+    
+    # Map RuleTier to CommandTier
+    mapping = {
+        RuleTier.SAFE: CommandTier.SAFE,
+        RuleTier.NETWORK: CommandTier.NETWORK,
+        RuleTier.DESTRUCTIVE: CommandTier.FILE_DESTRUCTIVE,
+        RuleTier.GIT_REWRITE: CommandTier.GIT_REWRITE,
+        RuleTier.BLOCKED: CommandTier.UNKNOWN,
+        RuleTier.EXFILTRATION: CommandTier.UNKNOWN,
+    }
+    
+    tier = mapping.get(res.tier, CommandTier.UNKNOWN)
+    policy = CommandPolicy.ALLOW if res.tier == RuleTier.SAFE else CommandPolicy.BLOCK if res.is_blocked else TIER_POLICY.get(tier, CommandPolicy.REQUIRE_APPROVAL)
 
-    # Check explicit blocks first
-    for pattern in _BLOCKED_PATTERNS:
-        if pattern.search(stripped):
-            return CommandClassification(
-                command=stripped,
-                tier=CommandTier.FILE_DESTRUCTIVE,
-                policy=CommandPolicy.BLOCK,
-                matched_pattern=pattern.pattern,
-                is_explicitly_blocked=True,
-                reasoning=f"Explicitly blocked: matches dangerous pattern '{pattern.pattern}'",
-            )
+    # Phase 68: Session-Aware Governance Override
+    if policy == CommandPolicy.REQUIRE_APPROVAL and governance.is_approved(command):
+        policy = CommandPolicy.ALLOW
 
-    # Classify by first matching pattern
-    for pattern, tier in _PATTERNS:
-        if pattern.search(stripped):
-            return CommandClassification(
-                command=stripped,
-                tier=tier,
-                policy=TIER_POLICY[tier],
-                matched_pattern=pattern.pattern,
-                reasoning=f"Matched {tier.name} pattern: '{pattern.pattern}'",
-            )
-
-    # No pattern matched → UNKNOWN → BLOCK
     return CommandClassification(
-        command=stripped,
-        tier=CommandTier.UNKNOWN,
-        policy=CommandPolicy.BLOCK,
-        reasoning="No known pattern matched. Command blocked pending review.",
+        command=command,
+        tier=tier,
+        policy=policy,
+        matched_pattern=res.matched_pattern,
+        is_explicitly_blocked=res.is_blocked,
+        reasoning=res.reason,
     )
 
 
 def is_command_allowed(command: str) -> tuple[bool, CommandClassification]:
-    """
-    Quick check: can this command auto-execute?
-
-    Returns (can_auto_execute, classification).
-    """
+    """ Quick check. """
     result = classify_command(command)
     auto_allowed = result.policy in {CommandPolicy.ALLOW, CommandPolicy.RATE_LIMIT}
     return auto_allowed, result

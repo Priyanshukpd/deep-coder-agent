@@ -70,15 +70,3 @@ class VisualTool:
         
         return result
 
-if __name__ == "__main__":
-    # Test run
-    tool = VisualTool()
-    print("Testing Visual Tool...")
-    # Assuming something is running on localhost:8000 or httpbin
-    # We can test with a public url like google.com for now
-    res = tool.quick_visual_check("https://google.com")
-    print(res)
-    if res["screenshot_path"]:
-        print(f"Screenshot saved to {res['screenshot_path']}")
-        # Clean up
-        os.remove(res["screenshot_path"])

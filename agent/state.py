@@ -55,15 +55,13 @@ FAILURE_STATES = TERMINAL_STATES - {AgentState.COMPLETE}
 
 
 class TaskIntent(Enum):
-    """Classified intent types — determines which workflow to run."""
+    """Classified intent types — determines the broad directional goal."""
 
-    FIX = "fix"              # Trace → Locate → Patch → Test
-    REFACTOR = "refactor"    # Wide search → Impact → Multi-file diff
-    FEATURE = "feature"      # Plan-heavy → Scaffold → Implement → Test
-    EXPLAIN = "explain"      # Read-only → No edits → Return analysis
-    GENERATE = "generate"    # Greenfield → Scaffold → Git init
-    DEPLOY = "deploy"        # Infra-only → No code changes
-    DEBUG = "debug"          # Trace-first → Profile → Patch
+    FIX = "fix"              # Correct errors or broken behavior
+    DEVELOP = "develop"      # Broad category for features, refactors, optimizations, etc.
+    EXPLAIN = "explain"      # Read-only analysis
+    GENERATE = "generate"    # Greenfield project scaffolding
+    META = "meta"            # Meta-commands (e.g., "stop", "undo", "wait")
 
 
 # -- Transition Rules --

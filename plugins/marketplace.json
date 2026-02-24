@@ -1,0 +1,53 @@
+{
+  "plugins": [
+    {
+      "id": "browser_tester",
+      "name": "Browser Tester",
+      "path": "plugins/browser_tester/plugin.py",
+      "class": "BrowserTester",
+      "description": "End-to-end browser testing using Playwright."
+    },
+    {
+      "id": "db_inspector",
+      "name": "Database Inspector",
+      "path": "plugins/db_inspector/plugin.py",
+      "class": "DatabaseInspector",
+      "description": "Schema and data inspection for SQL/NoSQL databases."
+    },
+    {
+      "id": "docker_inspector",
+      "name": "Docker Inspector",
+      "path": "plugins/docker_inspector/plugin.py",
+      "class": "DockerInspector",
+      "description": "Real-time monitoring and inspection of Docker containers."
+    },
+    {
+      "id": "doc_crawler",
+      "name": "Doc Crawler",
+      "path": "plugins/doc_crawler/plugin.py",
+      "class": "DocCrawler",
+      "description": "Automated documentation scraping and indexing."
+    },
+    {
+      "id": "lsp",
+      "name": "LSP Engine",
+      "path": "plugins/lsp/plugin.py",
+      "class": "LSPTool",
+      "description": "Language Server Protocol integration for linting and type checking."
+    },
+    {
+      "id": "visual",
+      "name": "Visual Auditor",
+      "path": "plugins/visual/plugin.py",
+      "class": "VisualTool",
+      "description": "Visual UI auditing and screenshot comparison."
+    },
+    {
+      "id": "security_advisor",
+      "name": "Security Advisor",
+      "path": "plugins/security_advisor/plugin.py",
+      "class": "SecurityAdvisor",
+      "description": "Static code analysis for security vulnerabilities."
+    }
+  ]
+}

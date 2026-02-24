@@ -28,53 +28,54 @@ class NetworkPolicyViolation(Exception):
 @dataclass(frozen=True)
 class NetworkPolicy:
     """
-    Network isolation policy for the IMPLEMENTING state.
-    
-    When active, blocks:
-        - All NETWORK tier commands (pip install, npm install, curl, wget, etc.)
-        - Any command that could fetch dependencies
+    Whitelisted Net-Zero Sandbox policy for the IMPLEMENTING state.
     """
     enabled: bool = True
-    allow_localhost: bool = True  # Allow local test servers
+    allow_localhost: bool = True
+    
+    # Domains allowed even during IMPLEMENTING lockdown
+    WHITELIST = {
+        "api.anthropic.com",
+        "api.openai.com",
+        "github.com",
+        "pypi.org",
+        "npmjs.com",
+        "registry.npmjs.org",
+        "files.pythonhosted.org",
+    }
 
-    # Patterns that are ALWAYS blocked during implementation
-    _BLOCKED_NETWORK_PATTERNS = [
-        re.compile(r"\bpip\s+install\b"),
-        re.compile(r"\bnpm\s+install\b"),
-        re.compile(r"\byarn\s+add\b"),
-        re.compile(r"\bcurl\b"),
-        re.compile(r"\bwget\b"),
-        re.compile(r"\bdocker\s+pull\b"),
-        re.compile(r"\bapt\s+install\b"),
-        re.compile(r"\bbrew\s+install\b"),
-    ]
+    def _extract_domain(self, command: str) -> Optional[str]:
+        """Attempt to extract a domain from a shell command."""
+        # Simple regex for URLs
+        match = re.search(r"https?://([a-zA-Z0-9.-]+)", command)
+        if match:
+            return match.group(1)
+        
+        # Specific check for git/npm/pip targets that might not be full URLs
+        return None
 
     def check_command(self, command: str) -> Optional[str]:
-        """
-        Check if a command violates the network policy.
-        
-        Returns violation reason if blocked, None if allowed.
-        """
         if not self.enabled:
             return None
 
         stripped = command.strip()
+        domain = self._extract_domain(stripped)
 
-        # Check against network patterns
-        for pattern in self._BLOCKED_NETWORK_PATTERNS:
-            if pattern.search(stripped):
-                return (
-                    f"Network policy violation: '{stripped}' is blocked during IMPLEMENTING. "
-                    f"No dependency installs or network access allowed."
-                )
+        # If a domain is found, check against whitelist
+        if domain:
+            is_whitelisted = any(domain == w or domain.endswith("." + w) for w in self.WHITELIST)
+            if not is_whitelisted:
+                return f"Net-Zero Violation: Domain '{domain}' is not in the sandbox whitelist."
 
-        # Also check via command safety classifier
+        # Fallback to TIER-based blocking for generic network tools without explicit URLs
+        from agent.security.command_safety import classify_command, CommandTier
         classification = classify_command(stripped)
+        
         if classification.tier == CommandTier.NETWORK:
-            return (
-                f"Network policy violation: command classified as NETWORK tier. "
-                f"Blocked during IMPLEMENTING state."
-            )
+            # If it's a network command but we couldn't verify a whitelist domain, block it.
+            # This is "deny-by-default".
+            if not domain:
+                return f"Net-Zero Violation: Generic network command '{stripped}' blocked (no verified whitelisted target)."
 
         return None
 

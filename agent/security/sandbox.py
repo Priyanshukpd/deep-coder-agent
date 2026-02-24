@@ -70,7 +70,12 @@ class SandboxedRunner:
         self.timeout = timeout_seconds
         self.cwd = working_directory
         self._network_enforcer = network_enforcer
+        self._approval_callback = None
         self._history: list[CommandResult] = []
+
+    def set_approval_callback(self, callback):
+        """Set a callback for human-in-the-loop approval."""
+        self._approval_callback = callback
 
     @property
     def command_history(self) -> list[CommandResult]:
@@ -115,6 +120,23 @@ class SandboxedRunner:
             self._history.append(result)
             logger.critical(f"BLOCKED command: {command}")
             raise CommandBlockedError(result.block_reason)
+
+        if policy == CommandPolicy.REQUIRE_APPROVAL:
+            # Phase 68: Check if already approved in this session
+            from agent.security.governance import get_governance_manager
+            governance = get_governance_manager(self.cwd)
+            
+            if not governance.is_approved(command):
+                if self._approval_callback:
+                    # Request human approval
+                    approved = self._approval_callback("COMMAND", f"{command}\nTier: {tier.name}\nReason: {classification.reasoning}")
+                    if approved:
+                        governance.approve(command)
+                    else:
+                        raise CommandBlockedError(f"User declined command: {command}")
+                else:
+                    # No way to get approval, must block
+                    raise CommandBlockedError(f"Command requires manual approval but no callback set: {command}")
 
         # Step 3: Check network policy
         if check_network and self._network_enforcer:

@@ -32,14 +32,14 @@ CLASSIFY_INTENT_TOOL = {
     "function": {
         "name": "classify_intent",
         "strict": True,
-        "description": "Classify the user's development request into a structured task intent with confidence.",
+        "description": "Classify the user's development request into a broad directional goal.",
         "parameters": {
             "type": "object",
             "properties": {
                 "intent": {
                     "type": "string",
-                    "enum": ["fix", "refactor", "feature", "explain", "generate", "deploy", "debug"],
-                    "description": "The classified task intent type."
+                    "enum": ["fix", "develop", "explain", "generate", "meta"],
+                    "description": "The directional goal."
                 },
                 "confidence": {
                     "type": "number",
@@ -47,15 +47,15 @@ CLASSIFY_INTENT_TOOL = {
                 },
                 "reasoning": {
                     "type": "string",
-                    "description": "Brief explanation for why this intent was chosen"
+                    "description": "Brief explanation"
                 },
                 "clarification_needed": {
                     "type": "boolean",
-                    "description": "True if the request is ambiguous and needs user clarification"
+                    "description": "True if the request is ambiguous"
                 },
                 "suggested_question": {
                     "type": "string",
-                    "description": "Question to ask the user if clarification is needed. Empty string if not needed."
+                    "description": "Question to ask the user if clarification is needed."
                 }
             },
             "required": ["intent", "confidence", "reasoning", "clarification_needed", "suggested_question"],
@@ -64,36 +64,27 @@ CLASSIFY_INTENT_TOOL = {
     }
 }
 
-SYSTEM_PROMPT = """You are the Intent Classifier for a deterministic dev agent. 
-Given a user's request, classify it into exactly one task intent by calling the classify_intent function.
+SYSTEM_PROMPT = """You are the Intent Classifier for a ReAct-based dev agent. 
+Classify the user's request into a directional goal by calling classify_intent.
 
-Intent types:
-- fix: Bug fix, error resolution, patching broken behavior
-- refactor: Code restructuring without behavior change
-- feature: New functionality, adding capabilities
-- explain: Code analysis, read-only investigation
-- generate: Greenfield project, scaffolding from scratch
-- deploy: Infrastructure, CI/CD, deployment changes
-- debug: Performance profiling, trace-first investigation
+Goals:
+- fix: Fixing bugs, errors, or broken behavior.
+- develop: Any active code development including new features, refactors, optimizations, or architectural shifts.
+- explain: Code analysis and questions (read-only).
+- generate: Creating a new project or file from nothing.
+- meta: Meta-commands for the agent (e.g., stop, wait, redo).
 
-Rules:
-1. Always call the classify_intent function — never respond with plain text.
-2. Set confidence between 0.0 and 1.0 based on how clear the intent is.
-3. If the request is COMPLETELY incomprehensible or contradictory, set clarification_needed=true.
-4. IMPORTANT: If the user asks for open-ended improvements (e.g., "make it better", "improve the UI", "refactor this"), DO NOT set clarification_needed=true. The agent is smart enough to autonomously analyze the code and infer improvements. Classify these as 'feature' or 'refactor' with high confidence.
-5. Keep reasoning concise (one sentence)."""
+The agent will autonomously determine the fine-grained steps (ReAct loop) once the goal is set."""
 
 
 # -- Intent Enum Mapping --
 
 _INTENT_MAP: dict[str, TaskIntent] = {
     "fix": TaskIntent.FIX,
-    "refactor": TaskIntent.REFACTOR,
-    "feature": TaskIntent.FEATURE,
+    "develop": TaskIntent.DEVELOP,
     "explain": TaskIntent.EXPLAIN,
     "generate": TaskIntent.GENERATE,
-    "deploy": TaskIntent.DEPLOY,
-    "debug": TaskIntent.DEBUG,
+    "meta": TaskIntent.META,
 }
 
 
@@ -189,54 +180,59 @@ class IntentClassifier:
     def _classify_with_heuristics(self, user_input: str, repo_context: str = "") -> IntentResult:
         """
         Keyword-based fallback classifier.
-
-        Used when:
-            - No LLM provider is configured
-            - LLM API call fails (network, rate limit, etc.)
+        Maps to broad directional goals.
         """
         lower_input = user_input.lower()
 
         # High Confidence FIX
-        if "fix" in lower_input and "error" in lower_input:
+        if any(w in lower_input for w in ["fix", "error", "bug", "broken", "correct"]):
             return IntentResult(
                 intent=TaskIntent.FIX,
                 confidence=0.95,
-                reasoning="Explicit 'fix' and 'error' keywords present.",
+                reasoning="Explicit error-related keywords present.",
             )
 
-        # High Confidence FEATURE
-        if "create" in lower_input or "add feature" in lower_input:
+        # High Confidence DEVELOP (Consolidated)
+        if any(w in lower_input for w in ["add", "feature", "refactor", "optimize", "ui", "framework", "migrate", "implement", "update", "build", "change"]):
             return IntentResult(
-                intent=TaskIntent.FEATURE,
+                intent=TaskIntent.DEVELOP,
                 confidence=0.90,
-                reasoning="Explicit creation keywords present.",
+                reasoning="Active development or structural keywords present.",
             )
 
-        # High Confidence REFACTOR
-        if "refactor" in lower_input or "clean up" in lower_input:
+        # High Confidence GENERATE
+        if any(w in lower_input for w in ["generate", "scaffold", "create", "write a script", "write code"]):
             return IntentResult(
-                intent=TaskIntent.REFACTOR,
-                confidence=0.85,
-                reasoning="Explicit refactoring keywords present.",
+                intent=TaskIntent.GENERATE,
+                confidence=0.95,
+                reasoning="Request to generate new files/projects.",
             )
 
-        # Low Confidence / Ambiguous (The "Ambiguity Fallback" Trigger)
-        if "check" in lower_input or "maybe" in lower_input:
+        # High Confidence META
+        if any(w in lower_input for w in ["stop", "wait", "undo", "redo", "pause", "capabilities", "status", "who are you", "are you done"]):
+            return IntentResult(
+                intent=TaskIntent.META,
+                confidence=0.95,
+                reasoning="Meta-command or capability query detected.",
+            )
+
+        # Low Confidence / Ambiguous
+        if "check" in lower_input or "look" in lower_input:
             return IntentResult(
                 intent=TaskIntent.EXPLAIN,
-                confidence=0.40,
-                reasoning="Vague request ('check', 'maybe'). Unsure if actionable.",
+                confidence=0.60,
+                reasoning="Vague request. Defaulting to EXPLAIN (read-only).",
                 clarification_needed=True,
-                suggested_question="Do you want me to just analyze the code (EXPLAIN) or fix issues I find (FIX)?",
+                suggested_question="Do you want me to just analyze (EXPLAIN) or make changes (DEVELOP)?",
             )
 
-        # Default: Unknown/Explain with low confidence
+        # Default
         return IntentResult(
             intent=TaskIntent.EXPLAIN,
             confidence=0.50,
-            reasoning="No strong keywords found.",
+            reasoning="Unknown intent. Defaulting to read-only mode for safety.",
             clarification_needed=True,
-            suggested_question="I'm not sure what you want to do. Can you verify?",
+            suggested_question="I'm not sure what you want to do. Can you clarify?",
         )
 
     def get_fallback_intent(self) -> TaskIntent:

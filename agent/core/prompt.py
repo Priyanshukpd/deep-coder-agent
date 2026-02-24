@@ -15,7 +15,15 @@ class PromptManager:
     1. PLANNING: Focus on architecture, dependencies, and step-by-step logic.
     2. CODING: Focus on production-quality code, aesthetics, and best practices.
     3. TESTING: Focus on finding bugs, edge cases, and security flaws.
+    4. DESIGN: Focus on elite aesthetics and conceptual visual identity.
     """
+
+    DESIGN_DNA_PERSONAS = {
+        "INDUSTRIAL_BRUTALIST": "High contrast, exposed grids, heavy typography (Space Grotesk), monochrome with vibrant accents, raw borders.",
+        "LUXURY_MINIMALIST": "Generous white space, serif headers (Playfair Display), subtle shadows, neutral tones (cream, charcoal), ultra-thin strokes.",
+        "CYBER_NEON": "Deep dark mode (#050505), glassmorphism (frosted glass), neon glows (Cyan/Magenta), monospaced fonts (JetBrains Mono).",
+        "SWISS_MODERN": "Asymmetric layouts, bold sans-serif (Archivo Black), primary colors (Red/Blue/Yellow), mathematically precise spacing."
+    }
 
     PLANNING_PROMPT = """You are a Principal Software Architect.
 Your goal is to design a robust, scalable solution for the user's request.
@@ -74,7 +82,10 @@ Your goal is to write clean, efficient, and production-ready code.
 Focus on:
 1.  **Correctness**: The code must run matching the requirements.
 2.  **Style**: Follow standard idioms (PEP8, ESLint, Prettier).
-3.  **Aesthetics**: If building UI, make it "World-Class" (Glassmorphism, Tailwind, Animation).
+3.  **Elite Design DNA**: You MUST avoid "AI Default" aesthetics (Inter font, purple gradients, generic cards).
+    *   **CONCEPTUAL PERSONA**: {design_persona}
+    *   **Rules**: {design_rules}
+    *   If building UI, use unique color palettes, custom shadows, and advanced CSS (clamp, subgrid, container queries).
 4.  **Safety**: No hardcoded secrets, no SQL injection.
 5.  **Completeness**: Handle edge cases and errors gracefully.
 6.  **Surgical Edits**: If you are modifying an existing file (as indicated in the user prompt), you MUST output a standard UNIFIED DIFF (patch) instead of the full file content. This is more efficient for large files.
@@ -99,21 +110,74 @@ Focus on:
 3.  **Performance**: Infinite loops, memory leaks.
 4.  **Verification**: Write a test script that proves the feature works (or fails).
 
-Output a test script or a verification report."""
+### OUT OF SCOPE:
+- Do NOT report on UI/UX unless it directly impacts functionality.
+- Do NOT suggest architectural changes; focus only on identifying bugs in the current diff.
+"""
 
-    def get_system_prompt(self, mode: str, language: str = "Python") -> str:
-        """Returns the system prompt for the given mode."""
+    EXPLORER_PROMPT = """You are a Context Explorer. 
+Your MISSION: Locate all relevant files and symbols for the task.
+Focus on: Mapping dependencies and reading enough code to understand the graph.
+### OUT OF SCOPE:
+- Do NOT suggest fixes. 
+- Do NOT write code.
+"""
+
+    ARCHITECT_PROMPT = """You are a Principal Architect.
+Your MISSION: Design a robust Execution Plan in JSON format.
+Focus on: Atomic file operations and clear content instructions.
+### OUT OF SCOPE:
+- Do NOT write the actual implementation.
+"""
+
+    IMPLEMENTER_PROMPT = """You are a Senior Implementer.
+Your MISSION: Execute surgical edits based on the Architect's plan.
+Focus on: Correctness, style, and minimizing lines changed.
+### OUT OF SCOPE:
+- Do NOT change the architecture or dependencies.
+"""
+
+    VERIFIER_PROMPT = """You are a Verification Specialist.
+Your MISSION: Ensure the implementation is bug-free and meets requirements.
+Focus on: Running tests, linting, and validating the fix.
+### OUT OF SCOPE:
+- Do NOT implement new features.
+"""
+
+    def get_system_prompt(self, mode: str, language: str = "Python", file_list: list[str] = None) -> str:
+        """Returns the system prompt for the given mode, optionally hydrated with skills."""
         mode = mode.upper()
         
+        base_prompt = ""
         if mode == "PLANNING":
-            return self.PLANNING_PROMPT
+            base_prompt = self.PLANNING_PROMPT
         elif mode == "CODING":
-            return self.CODING_PROMPT.replace("{language}", language)
+            import random
+            persona_key = random.choice(list(self.DESIGN_DNA_PERSONAS.keys()))
+            rules = self.DESIGN_DNA_PERSONAS[persona_key]
+            base_prompt = self.CODING_PROMPT.replace("{language}", language).replace("{design_persona}", persona_key).replace("{design_rules}", rules)
+        elif mode == "DESIGN_ENFORCER":
+            base_prompt = self.DESIGN_ENFORCER_PROMPT
         elif mode == "TESTING":
-            return self.TESTING_PROMPT
+            base_prompt = self.TESTING_PROMPT
+        elif mode == "EXPLORER":
+            base_prompt = self.EXPLORER_PROMPT
+        elif mode == "ARCHITECT":
+            base_prompt = self.ARCHITECT_PROMPT
+        elif mode == "IMPLEMENTER":
+            base_prompt = self.IMPLEMENTER_PROMPT
+        elif mode == "VERIFIER":
+            base_prompt = self.VERIFIER_PROMPT
         else:
-            # Fallback to a generic helpful assistant
-            return f"You are a helpful AI assistant expert in {language}."
+            base_prompt = f"You are a helpful AI assistant expert in {language}."
+
+        if file_list:
+            from agent.core.skill_registry import skill_registry
+            hydrated_docs = skill_registry.get_hydrated_docs(file_list)
+            if hydrated_docs:
+                base_prompt = f"{base_prompt}\n\n{hydrated_docs}"
+
+        return base_prompt
 
 # Singleton instance
 prompt_manager = PromptManager()

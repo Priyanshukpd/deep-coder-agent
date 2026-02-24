@@ -41,7 +41,6 @@ logger = logging.getLogger(__name__)
 
 from agent.core.process_manager import ProcessManager, ProcessInfo
 from agent.planning.memory import ArchitectureMemory
-from agent.tools.security_advisor import SecurityAdvisor
 
 MAX_FIX_ATTEMPTS = int(os.environ.get("GOD_MODE_MAX_FIX_ATTEMPTS", "7"))
 
@@ -86,6 +85,9 @@ class ExecutionPlan:
     db_seed_command: str = ""      # e.g. "python manage.py loaddata", "npx prisma db seed"
     visual_verification: str = ""  # e.g. "Check if the login form is centered and has a blue button"
     is_complete: bool = True       # Whether the task is fully finished or needs follow-up
+    is_ambiguous: bool = False     # Whether the task needs clarification
+    questions: list[str] = field(default_factory=list)
+    best_guess_scenario: str = ""
 
 RELEVANCE_PROMPT = """Analyze the file list and the task. Identify the top 5-10 files that are most likely to contain the logic relevant to the task, or files that need to be modified.
 
@@ -176,21 +178,23 @@ class TaskExecutor:
         self._memory = ArchitectureMemory(self._repo_path, self._provider)
         self._accumulated_feedback: list[str] = []
         
-        # Phase 12 & 14 & 20 Tools
-        from agent.tools.docker_inspector import DockerInspector
-        from agent.tools.db_inspector import DatabaseInspector
-        from agent.tools.browser_tester import BrowserTester
-        from agent.tools.doc_crawler import DocCrawler
-        from agent.tools.lsp import LSPTool
-        from agent.tools.visual import VisualTool
         from agent.core.prompt import prompt_manager
+        from agent.security.sandbox import SandboxedRunner
+        from agent.core.plugin_loader import PluginLoader
+        
+        self._sandbox = SandboxedRunner(working_directory=self._repo_path)
+        self._plugin_loader = PluginLoader(self._repo_path)
+        
+        # Phase 70: Dynamic Plugin Loading
+        plugins = self._plugin_loader.get_all_plugins()
+        self.docker_inspector = plugins.get("docker_inspector")
+        self.db_inspector = plugins.get("db_inspector")
+        self.browser_tester = plugins.get("browser_tester")
+        self.doc_crawler = plugins.get("doc_crawler")
+        self.lsp_tool = plugins.get("lsp")
+        self.visual_tool = plugins.get("visual")
+        self.security_advisor = plugins.get("security_advisor")
 
-        self.docker_inspector = DockerInspector()
-        self.db_inspector = DatabaseInspector()
-        self.browser_tester = BrowserTester()
-        self.doc_crawler = DocCrawler()
-        self.lsp_tool = LSPTool()
-        self.visual_tool = VisualTool()
         self.prompt_manager = prompt_manager
 
         self._approval_callback = None
@@ -200,6 +204,7 @@ class TaskExecutor:
     def set_approval_callback(self, callback):
         """Set a callback for interactive approval: callback(stage, details) -> bool."""
         self._approval_callback = callback
+        self._sandbox.set_approval_callback(callback)
     
     def add_feedback(self, feedback: str):
         """Add additional user comments or tasks to the current context."""
@@ -931,8 +936,7 @@ class TaskExecutor:
 
     def run_code(self, command: str) -> RunResult:
         """
-        Run a command in the repo directory and capture output.
-        Handles smart timeouts and server detection.
+        Run a command in the repo directory through the safety sandbox.
         """
         if not command:
             return RunResult(True, "", "", 0, "")
@@ -945,25 +949,12 @@ class TaskExecutor:
 
         # Smart timeout
         timeout = self._smart_timeout(command)
-        if timeout != 120:
-            print(f"  Wait  Timeout: {timeout}s (auto-detected)")
-
-        # Use environment that inherits everything + adds repo to PATH
-        env = os.environ.copy()
-        env['PATH'] = self._repo_path + os.pathsep + env.get('PATH', '')
-
-        # Use ProcessManager to stream output
-        rc, output = self._process_manager.run_stream(
-            command, cwd=self._repo_path, timeout=timeout, env=env
-        )
         
-        success = rc == 0
-        if success:
-            print(f"  Success (exit code 0)")
-        else:
-            print(f"  Failed (exit code {rc})")
-            
-        return RunResult(success, output, "", rc, command)
+        try:
+            res = self._sandbox.run(command, timeout=timeout)
+            return RunResult(res.success, res.stdout, res.stderr, res.exit_code, command)
+        except Exception as e:
+            return RunResult(False, "", str(e), -1, command)
 
     def _run_server(self, command: str) -> RunResult:
         """
@@ -1306,27 +1297,46 @@ class TaskExecutor:
     # ── Full Agentic Loop ───────────────────────────────────────────
 
 
-    def execute(self, task: str) -> ExecutionPlan:
+    def execute(self, task: str, intent: str = "develop", full_history: list = None) -> ExecutionPlan:
         """
-        Full agentic loop with hardened execution:
-            Kill Switch -> Research -> Plan -> Freeze Envelope -> Supply Chain Check ->
-            Task Isolation -> Write Code -> Secrets Scan -> Lint Check ->
-            Install Deps -> Run -> Self-Correct -> Verify -> Enforce Plan -> [Repeat if not complete] -> Done
+        Expert Handoff Loop (Phase 64).
+        Decouples Research, Planning, and Execution into specialized missions.
         """
-        # ── Lazy imports (avoid circular deps at module level) ──
-        from agent.security.kill_switch import KillSwitch
-        from agent.planning.plan_envelope import PlanEnvelopeValidator
-        from agent.security.supply_chain import SupplyChainChecker
-        from agent.mechanisms.task_isolation import TaskIsolation
-        from agent.security.secrets_policy import SecretsPolicy
-        from agent.verification.lsp_loop import BoundedLSPLoop
-        from agent.verification.verification_pipeline import VerificationPipeline, VerifyTier
-        from agent.planning.plan_enforcer import PlanEnforcer
-        from agent.core.knowledge_graph import KnowledgeGraph
+        from agent.state import TaskIntent
+        from agent.core.react_orchestrator import ReActOrchestrator
+        from agent.planning.ambiguity_analyzer import AmbiguityAnalyzer
 
-        # ── Step 0: Research ──
-        print("ST_STEP:RESEARCHING")
+        # ── Step 1: EXPLORER Mission ──
+        print(f"🔍 [Explorer] Mapping repository context...")
         research_notes = self._research_task(task)
+
+        # ── Step 2: AMBIGUITY Check ──
+        analyzer = AmbiguityAnalyzer(self._provider)
+        files = "\n".join(self._knowledge_graph.get_all_files()[:100]) if self._knowledge_graph else ""
+        repo_context = f"Research Notes:\n{research_notes[:1000]}\n\nFiles:\n{files}"
+        
+        ambiguity = analyzer.analyze(task, repo_context)
+        if ambiguity.is_ambiguous:
+            return ExecutionPlan(
+                task=task,
+                summary="Clarification required",
+                is_complete=False,
+                is_ambiguous=True,
+                questions=ambiguity.questions,
+                best_guess_scenario=ambiguity.best_guess_scenario
+            )
+
+        # ── Step 4: IMPLEMENTER Mission (via ReAct) ──
+        if intent in [TaskIntent.DEVELOP.value, TaskIntent.FIX.value, "develop", "fix"]:
+            print(f"🚀 [Implementer] Executing surgical edits...")
+            orchestrator = ReActOrchestrator(self._provider, self)
+            success = orchestrator.orchestrate(task, intent, full_history=full_history)
+            self.last_run_success = success
+            return ExecutionPlan(task=task, summary="Executed via ReAct Implementer", is_complete=success)
+
+        return ExecutionPlan(task=task, summary="Task processed through expert handoffs.", is_complete=True)
+
+        # ── Original Sequential Loop for other intents ──
 
         # ── Step 0b: Arm kill switch (adaptive) ──
 

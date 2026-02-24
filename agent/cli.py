@@ -373,6 +373,17 @@ def run_full_pipeline(task: str, repo_path: str = ".", dry_run: bool = False,
     executor.set_sandbox(sandbox)
 
     def _display_plan(plan):
+        if plan.is_ambiguous:
+            print(f"\n❓ CLARIFICATION NEEDED")
+            print(f"─" * 40)
+            print(f"I need more information before I can build a solid plan:")
+            for i, q in enumerate(plan.questions, 1):
+                print(f"   {i}. {q}")
+            print(f"\n💡 My best guess assumption:")
+            print(f"   {plan.best_guess_scenario}")
+            print(f"─" * 40)
+            return
+
         print(f"\n📋 Plan: {plan.summary}")
         if plan.dependencies:
             print(f"📦 Dependencies: {', '.join(plan.dependencies)}")
@@ -385,12 +396,35 @@ def run_full_pipeline(task: str, repo_path: str = ".", dry_run: bool = False,
             print(f"🧪 Test: {plan.test_command}")
 
     if dry_run:
-        plan = executor.generate_plan(task)
+        plan = executor.execute(task, intent=intent_str)
         _display_plan(plan)
+        if plan.is_ambiguous:
+            print("\n🔍 Stopping because task is ambiguous.")
+            return False
         print("\n🔍 Dry run complete — no files written.")
         llm_calls = provider.call_count
         exec_log.add("execution", "dry_run", f"{len(plan.files)} files planned")
     else:
+        plan = executor.execute(task, intent=intent_str)
+        
+        # Phase 59: Handle ambiguity in interactive loop
+        while plan.is_ambiguous:
+            _display_plan(plan)
+            print("\n🗣️ Please clarify or type 'yes' to proceed with my best guess.")
+            try:
+                feedback = input("   feedback> ").strip()
+                if not feedback or feedback.lower() in ('y', 'yes'):
+                    # User accepts best guess, tell executor to proceed
+                    executor.add_feedback(f"Proceed with your best guess: {plan.best_guess_scenario}")
+                else:
+                    executor.add_feedback(feedback)
+                
+                # Re-run execute with feedback
+                print("🧠 Re-analyzing task with feedback...")
+                plan = executor.execute(task, intent=intent_str)
+            except (EOFError, KeyboardInterrupt):
+                return False
+
         # User confirmation / Interactive Feedback Loop
         if not yes:
             while True:
@@ -412,7 +446,7 @@ def run_full_pipeline(task: str, repo_path: str = ".", dry_run: bool = False,
                         print("🧠 Re-planning based on new instructions...")
                         executor.add_feedback(answer)
                         # Regenerate plan with feedback context
-                        plan = executor.generate_plan(task)
+                        plan = executor.execute(task, intent=intent_str)
                         _display_plan(plan)
                         # Continue loop to ask again
                 except (EOFError, KeyboardInterrupt):
@@ -422,7 +456,7 @@ def run_full_pipeline(task: str, repo_path: str = ".", dry_run: bool = False,
         # Backup files for rollback
         executor.set_rollback_manager(rollback_mgr)
 
-        plan = executor.execute(task)
+        # plan = executor.execute(task, intent=intent_str) # This line was moved up
         files_written = len(plan.files)
         llm_calls = provider.call_count
 

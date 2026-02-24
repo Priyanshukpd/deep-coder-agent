@@ -40,13 +40,13 @@ class TestIntentClassifierLLM(unittest.TestCase):
         self.assertTrue(result.is_confident)
         self.assertFalse(result.clarification_needed)
 
-    def test_llm_feature_intent(self):
+    def test_llm_develop_intent(self):
         tool_result = ToolCallResult(
             function_name="classify_intent",
             arguments={
-                "intent": "feature",
+                "intent": "develop",
                 "confidence": 0.88,
-                "reasoning": "User wants a new feature",
+                "reasoning": "User wants a new feature or code development",
                 "clarification_needed": False,
                 "suggested_question": "",
             },
@@ -54,7 +54,41 @@ class TestIntentClassifierLLM(unittest.TestCase):
         classifier, _ = self._make_classifier_with_mock_provider(tool_result)
         result = classifier.classify("Add dark mode to the settings page")
 
-        self.assertEqual(result.intent, TaskIntent.FEATURE)
+        self.assertEqual(result.intent, TaskIntent.DEVELOP)
+        self.assertTrue(result.is_confident)
+
+    def test_llm_generate_intent(self):
+        tool_result = ToolCallResult(
+            function_name="classify_intent",
+            arguments={
+                "intent": "generate",
+                "confidence": 0.92,
+                "reasoning": "User wants code generation",
+                "clarification_needed": False,
+                "suggested_question": "",
+            },
+        )
+        classifier, _ = self._make_classifier_with_mock_provider(tool_result)
+        result = classifier.classify("Generate a Python script for data processing")
+
+        self.assertEqual(result.intent, TaskIntent.GENERATE)
+        self.assertTrue(result.is_confident)
+
+    def test_llm_meta_intent(self):
+        tool_result = ToolCallResult(
+            function_name="classify_intent",
+            arguments={
+                "intent": "meta",
+                "confidence": 0.94,
+                "reasoning": "User is asking about the agent itself or its capabilities",
+                "clarification_needed": False,
+                "suggested_question": "",
+            },
+        )
+        classifier, _ = self._make_classifier_with_mock_provider(tool_result)
+        result = classifier.classify("What can you do?")
+
+        self.assertEqual(result.intent, TaskIntent.META)
         self.assertTrue(result.is_confident)
 
     def test_llm_ambiguous_intent(self):
@@ -78,9 +112,18 @@ class TestIntentClassifierLLM(unittest.TestCase):
 
     def test_all_intent_types_mapped(self):
         """Verify every TaskIntent has a mapping from string."""
-        for intent in TaskIntent:
+        expected_intents = {
+            TaskIntent.DEVELOP,
+            TaskIntent.FIX,
+            TaskIntent.EXPLAIN,
+            TaskIntent.GENERATE,
+            TaskIntent.META,
+        }
+        for intent in expected_intents:
             self.assertIn(intent.value, _INTENT_MAP)
             self.assertEqual(_INTENT_MAP[intent.value], intent)
+        self.assertEqual(len(_INTENT_MAP), len(expected_intents))
+
 
     def test_llm_confidence_is_clamped(self):
         """Confidence values outside [0, 1] should be clamped."""
@@ -133,17 +176,39 @@ class TestIntentClassifierFallback(unittest.TestCase):
     def test_no_provider_uses_heuristics(self):
         """No provider = pure heuristic mode."""
         classifier = IntentClassifier(provider=None)
-        result = classifier.classify("create a new dashboard")
-        self.assertEqual(result.intent, TaskIntent.FEATURE)
+        result = classifier.classify("implement a new dashboard")
+        self.assertEqual(result.intent, TaskIntent.DEVELOP)
 
-    def test_heuristic_refactor(self):
+    def test_heuristic_develop(self):
         classifier = IntentClassifier(provider=None)
-        result = classifier.classify("refactor the user module")
-        self.assertEqual(result.intent, TaskIntent.REFACTOR)
+        result = classifier.classify("implement a new feature")
+        self.assertEqual(result.intent, TaskIntent.DEVELOP)
+        self.assertGreaterEqual(result.confidence, 0.90)
+
+        result_add = classifier.classify("add a new endpoint")
+        self.assertEqual(result_add.intent, TaskIntent.DEVELOP)
+
+    def test_heuristic_generate(self):
+        classifier = IntentClassifier(provider=None)
+        result = classifier.classify("write a script for me")
+        self.assertEqual(result.intent, TaskIntent.GENERATE)
+        self.assertGreaterEqual(result.confidence, 0.90)
+
+        result_code = classifier.classify("generate some boilerplate code")
+        self.assertEqual(result_code.intent, TaskIntent.GENERATE)
+
+    def test_heuristic_meta(self):
+        classifier = IntentClassifier(provider=None)
+        result = classifier.classify("what are your capabilities?")
+        self.assertEqual(result.intent, TaskIntent.META)
+        self.assertGreaterEqual(result.confidence, 0.90)
+
+        result_status = classifier.classify("are you done?")
+        self.assertEqual(result_status.intent, TaskIntent.META)
 
     def test_heuristic_ambiguous(self):
         classifier = IntentClassifier(provider=None)
-        result = classifier.classify("maybe check the performance?")
+        result = classifier.classify("maybe check the code?")
         self.assertFalse(result.is_confident)
         self.assertTrue(result.requires_clarification)
 

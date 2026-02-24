@@ -61,8 +61,7 @@ class DocCrawler:
                 })
                 
             return results
-        except Exception as e:
-            print(f"DocSearch failed: {e}")
+        except Exception:
             return []
 
     def read_page(self, url: str) -> str:

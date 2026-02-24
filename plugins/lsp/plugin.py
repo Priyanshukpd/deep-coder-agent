@@ -334,15 +334,3 @@ class LSPTool:
             diagnostics.append({"error": str(e)})
         return diagnostics
 
-if __name__ == "__main__":
-    # Test run
-    tool = LSPTool()
-    print("Testing LSP Tool...")
-    # Create a dummy python file with an error
-    with open("test_broken.py", "w") as f:
-        f.write("print(x)\n") # Undefined variable x
-    
-    diags = tool.get_diagnostics("test_broken.py")
-    print(json.dumps(diags, indent=2))
-    
-    os.remove("test_broken.py")

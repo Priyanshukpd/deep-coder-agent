@@ -21,8 +21,9 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 from agent.planning.agents_loader import inject_agents_md
-from agent.core.context_manager import trim_history, estimate_tokens
+from agent.core.context_manager import trim_history, estimate_tokens, estimate_message_tokens
 from agent.core.session_store import save_message, save_session_meta, session_path
+from agent.planning.session_state_manager import SessionStateManager
 
 logger = logging.getLogger(__name__)
 
@@ -124,6 +125,8 @@ class ChatSession:
         # Save session metadata for resume listing
         save_session_meta(self._session_id, self._repo_path, getattr(self._provider.config.llm, "model", "default"))
 
+        self.state_manager = SessionStateManager(self._repo_path, self._provider)
+
 
 
     # ── Repo Context ─────────────────────────────────────────
@@ -189,6 +192,23 @@ class ChatSession:
 
         # 2. Context Window Management — Trim history if approaching limit
         model_name = getattr(self._provider.config.llm, "model", "gpt-4o")
+        
+        # Phase 63: Stateful Pre-Compaction
+        total_tokens = estimate_message_tokens(msgs)
+        from agent.core.context_manager import TRIM_THRESHOLD
+        from agent.core.model_registry import get_model_meta
+        meta = get_model_meta(model_name)
+        budget = int(meta.context_window * TRIM_THRESHOLD)
+        
+        if total_tokens > budget:
+            # History is about to be trimmed. Checkpoint the mental map first.
+            self.state_manager.pre_compact_hook(msgs)
+            
+        # Add the mental map to the system prompt
+        state_context = self.state_manager.get_state_context()
+        if state_context:
+            msgs[0]["content"] += state_context
+
         msgs = trim_history(msgs, model_name=model_name)
 
         return msgs
@@ -352,13 +372,20 @@ class ChatSession:
 
         # For generate/fix/modify — run the full pipeline
         try:
-            plan = executor.execute(action.task)
+            # Map chat action types to TaskIntent
+            target_intent = action.type
+            if target_intent == "modify":
+                target_intent = "develop"
+            
+            full_history = [m.to_llm() for m in self._messages]
+            plan = executor.execute(action.task, intent=target_intent, full_history=full_history)
             self._last_plan = plan
             self.last_action_success = executor.last_run_success
             files = [f.path for f in plan.files]
 
             if self.last_action_success:
                 self._last_error = None
+                self.state_manager.post_action_update(plan) # Update state manager after successful action
                 self._load_repo_context()
                 return self._build_success_summary(action, plan, executor)
             else:
