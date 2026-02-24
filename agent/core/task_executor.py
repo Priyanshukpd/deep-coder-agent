@@ -32,6 +32,7 @@ import sys
 import shutil
 import logging
 import re
+import time
 from dataclasses import dataclass, field
 from threading import Thread
 from typing import Optional, List, Dict, Any, Union
@@ -207,7 +208,7 @@ class TaskExecutor:
             logger.info(f"Feedback added: {feedback}")
 
     def _extract_result(self, content: str) -> tuple[str, str]:
-        """Extracts the generated code and the CoT <analysis> block (if any)."""
+        """Extracts the generated code (or diff) and the CoT <analysis> block (if any)."""
         import re
         analysis = ""
         analysis_match = re.search(r"<analysis>\s*(.*?)\s*</analysis>", content, flags=re.DOTALL | re.IGNORECASE)
@@ -215,19 +216,25 @@ class TaskExecutor:
             analysis = analysis_match.group(1)
             
         code = content
-        code_blocks = re.findall(r"```[a-zA-Z0-9_-]*\n(.*?)```", content, flags=re.DOTALL)
-        if code_blocks:
-            code = code_blocks[-1]
+        # Prefer diff blocks if they exist (for surgical edits)
+        diff_blocks = re.findall(r"```diff\n(.*?)```", content, flags=re.DOTALL)
+        if diff_blocks:
+            code = diff_blocks[-1]
         else:
-            clean_content = re.sub(r"<analysis>.*?</analysis>", "", content, flags=re.DOTALL | re.IGNORECASE).strip()
-            if clean_content.startswith("```"):
-                code = clean_content.split("\n", 1)[1]
-                if "```" in code:
-                    code = code.rsplit("```", 1)[0]
+            code_blocks = re.findall(r"```[a-zA-Z0-9_-]*\n(.*?)```", content, flags=re.DOTALL)
+            if code_blocks:
+                code = code_blocks[-1]
             else:
-                code = clean_content
+                clean_content = re.sub(r"<analysis>.*?</analysis>", "", content, flags=re.DOTALL | re.IGNORECASE).strip()
+                if clean_content.startswith("```"):
+                    code = clean_content.split("\n", 1)[1]
+                    if "```" in code:
+                        code = code.rsplit("```", 1)[0]
+                else:
+                    code = clean_content
 
         return code.strip(), analysis.strip()
+
     
     def _request_approval(self, stage: str, details: str) -> Any:
         """Request user approval for a step. Returns True, False, or a feedback string."""
@@ -435,14 +442,15 @@ class TaskExecutor:
             logger.info(f"Knowledge Graph built with {len(self._knowledge_graph.graph)} nodes.")
 
     def _read_repo_context(self) -> str:
-
         """Read the repo structure and key files for context."""
         context_parts = []
         context_parts.append(f"Repository: {self._repo_path}\n")
 
+        ignore_dirs = {'.git', 'node_modules', 'venv', '.venv', '__pycache__', 'dist', 'build', '.agent_log'}
+
         context_parts.append("Files in repo:")
         for root, dirs, files in os.walk(self._repo_path):
-            dirs[:] = [d for d in dirs if not d.startswith('.') and d != '__pycache__']
+            dirs[:] = [d for d in dirs if not d.startswith('.') and d not in ignore_dirs]
             for f in files:
                 fpath = os.path.join(root, f)
                 rel = os.path.relpath(fpath, self._repo_path)
@@ -451,7 +459,7 @@ class TaskExecutor:
 
         context_parts.append("\n--- File Contents ---")
         for root, dirs, files in os.walk(self._repo_path):
-            dirs[:] = [d for d in dirs if not d.startswith('.') and d != '__pycache__']
+            dirs[:] = [d for d in dirs if not d.startswith('.') and d not in ignore_dirs]
             for f in files:
                 fpath = os.path.join(root, f)
                 rel = os.path.relpath(fpath, self._repo_path)
@@ -511,10 +519,16 @@ class TaskExecutor:
     def _read_smart_context(self, task: str) -> str:
         """Smartly select and read relevant files for the task."""
         candidates = []
-        for root, _, files in os.walk(self._repo_path):
-             if any(part.startswith('.') for part in root.split(os.sep)):
-                 continue
+        ignore_dirs = {'.git', 'node_modules', 'venv', '.venv', '__pycache__', 'dist', 'build'}
+        
+        for root, dirs, files in os.walk(self._repo_path):
+             # Modify dirs in-place to skip ignored directories
+             dirs[:] = [d for d in dirs if not d.startswith('.') and d not in ignore_dirs]
+             
              for f in files:
+                 # Skip large binary or minified files if needed, but primarily skip dirs
+                 if f.endswith('.pyc') or f.endswith('.map') or f == 'package-lock.json':
+                     continue
                  candidates.append(os.path.relpath(os.path.join(root, f), self._repo_path))
         
         # If small repo, read all supported files
@@ -564,10 +578,13 @@ class TaskExecutor:
         print(f"\n🧠 Researching codebase for task: '{task}'...")
         
         candidates = []
-        for root, _, files in os.walk(self._repo_path):
-             if any(part.startswith('.') for part in root.split(os.sep)):
-                 continue
+        ignore_dirs = {'.git', 'node_modules', 'venv', '.venv', '__pycache__', 'dist', 'build'}
+        
+        for root, dirs, files in os.walk(self._repo_path):
+             dirs[:] = [d for d in dirs if not d.startswith('.') and d not in ignore_dirs]
              for f in files:
+                 if f.endswith('.pyc') or f.endswith('.map') or f == 'package-lock.json':
+                     continue
                  candidates.append(os.path.relpath(os.path.join(root, f), self._repo_path))
         
         # 1. Identify key files via LLM
@@ -624,7 +641,7 @@ class TaskExecutor:
             research_context = f"\n\n### RESEARCH NOTES (Key file contents):\n{research_notes}"
 
         messages = [
-            {"role": "system", "content": self.prompt_manager.get_system_prompt("PLANNING")},
+            {"role": "system", "content": inject_agents_md(self.prompt_manager.get_system_prompt("PLANNING"), self._repo_path)},
             {"role": "user", "content": (
                 f"Task: {task}{stack_hint}{feedback_context}{research_context}"
                 f"\n\nRepository context:\n{context}"
@@ -714,9 +731,9 @@ class TaskExecutor:
             feedback_context += "\nIMPORTANT: Incorporate the above feedback into the code you generate."
 
         messages = [
-            {"role": "system", "content": self.prompt_manager.get_system_prompt("CODING", 
+            {"role": "system", "content": inject_agents_md(self.prompt_manager.get_system_prompt("CODING", 
                 language=self._stack_profile.code_prompt_language if self._stack_profile else "Python"
-            )},
+            ), self._repo_path)},
             {"role": "user", "content": (
                 f"Task: {task}{feedback_context}\n\n{plan_summary}\n"
                 f"Now generate the COMPLETE code for: {file_action.path}\n"
@@ -1531,10 +1548,47 @@ class TaskExecutor:
                 code = secrets.redact(code)
                 print(f"     → Redacted {len(secret_matches)} secrets")
 
-            self._write_file(file_action, code)
-            lines = len(code.split('\n'))
-            print(f"  ✅ Wrote: {file_action.path} ({lines} lines)")
+            # ── Step 5b: Surgical Patch or Full Write ──
+            if file_action.action == "modify" and (code.startswith("@@") or "@@ -" in code):
+                print(f"  🩹 Applying surgical patch to {file_action.path}...")
+                success = self._apply_surgical_patch(file_action, code)
+                if not success:
+                    print(f"  ⚠️  Surgical patch failed. Falling back to full rewrite...")
+                    self._write_file(file_action, code)
+                    lines_count = len(code.split('\n'))
+                    print(f"  ✅ Wrote: {file_action.path} ({lines_count} lines)")
+            else:
+                self._write_file(file_action, code)
+                lines_count = len(code.split('\n'))
+                print(f"  ✅ Wrote: {file_action.path} ({lines_count} lines)")
+
             kill_switch.heartbeat()  # Keep alive during long code gen
+
+    def _apply_surgical_patch(self, file_action: FileAction, diff_text: str) -> bool:
+
+        """Apply a unified diff surgically using DiffEditor."""
+        from agent.mechanisms.diff_editor import DiffEditor
+        editor = DiffEditor()
+        full_path = os.path.join(self._repo_path, file_action.path)
+        
+        try:
+            # Backup for rollback
+            if self._rollback_mgr:
+                self._rollback_mgr.backup(file_action.path)
+            
+            success = editor.apply_unified_diff(diff_text, full_path)
+            if success:
+                print(f"  ✅ Patched: {file_action.path}")
+                # We don't have the final content easily without re-reading
+                if os.path.exists(full_path):
+                    with open(full_path, 'r') as f:
+                        file_action.content = f.read()
+                return True
+        except Exception as e:
+            logger.error(f"Surgical patch error: {e}")
+        
+        return False
+
 
         # ── Step 6: Lint / Syntax check ──
         print(f"\n🔍 Syntax/lint check...")

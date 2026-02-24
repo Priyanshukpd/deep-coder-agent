@@ -20,6 +20,10 @@ from datetime import datetime
 from dataclasses import dataclass, field
 from typing import Optional
 
+from agent.planning.agents_loader import inject_agents_md
+from agent.core.context_manager import trim_history, estimate_tokens
+from agent.core.session_store import save_message, save_session_meta, session_path
+
 logger = logging.getLogger(__name__)
 
 
@@ -35,9 +39,9 @@ IMPORTANT: You must decide how to respond to each user message. Respond with a J
   "mode": "CHAT" or "ACTION",
   "message": "Your conversational response to the user",
   "action": null or {
-    "type": "generate" | "fix" | "modify" | "run" | "research",
+    "type": "generate" | "fix" | "modify" | "run" | "research" | "cd",
     "task": "Clear task description for the executor",
-    "run_command": "optional shell command to run"
+    "run_command": "optional shell command to run or path to cd into"
   }
 }
 
@@ -45,6 +49,8 @@ Guidelines:
 - Use "CHAT" mode for simple questions, greetings, or quick confirmations AFTER you have gathered enough information.
 - Use "ACTION" with type "research" when the user asks for explanations, codebase structure, or deep logic analysis. 
 - PROACTIVE AGENTIC BEHAVIOR: If you are asked to "explain the code" or "how does X work", do NOT just answer from the file tree. You MUST trigger an "ACTION" of type "research" first. 
+- FLUID WORKSPACE: If the user asks to "create a new project" and you are in the wrong directory, DO NOT tell the user to change directories. Instead, trigger a "run" action to `mkdir` the new project, or output a "cd" action with the relative path to move there autonomously.
+- SMART CODING (LONG TASKS): If writing code that takes hours to run (e.g., ML training, large data processing), NEVER hardcode the long loop in the main block. Use structured functions or classes. Provide a way (e.g., via CLI args or a test flag) to verify the logic on a microscopic scale (1% of data/1 epoch) to prove the code works before the user runs the full job.
 - You will receive the research findings in the next turn. Use those findings to provide a detailed, accurate response in "CHAT" mode.
 - In ACTION mode, your "message" should say something like "I'll analyze the code to give you a detailed answer."
 - Never promise to do something in CHAT mode that you aren't actually triggering an ACTION for.
@@ -114,6 +120,9 @@ class ChatSession:
         self._last_error = None
         self.last_action_success = True
         self.interactive_mode = False  # Toggle for Co-Pilot behavior
+        
+        # Save session metadata for resume listing
+        save_session_meta(self._session_id, self._repo_path, getattr(self._provider.config.llm, "model", "default"))
 
 
 
@@ -131,11 +140,11 @@ class ChatSession:
             repo_map = discovery.scan()
             file_count = repo_map.file_count
             stack = repo_map.stack.summary if repo_map.stack else "Unknown"
+            
             # Compact file tree
+            ignore_dirs = {'.git', 'node_modules', 'venv', '.venv', '__pycache__', 'dist', 'build', '.agent_log'}
             for root, dirs, files in os.walk(self._repo_path):
-                dirs[:] = [d for d in dirs if not d.startswith('.')
-                           and d != '__pycache__' and d != 'node_modules'
-                           and d != '.agent_log']
+                dirs[:] = [d for d in dirs if not d.startswith('.') and d not in ignore_dirs]
                 level = root.replace(self._repo_path, '').count(os.sep)
                 indent = '  ' * level
                 basename = os.path.basename(root) or '.'
@@ -161,7 +170,10 @@ class ChatSession:
 
     def _build_llm_messages(self) -> list[dict]:
         """Build the full message list for the LLM."""
-        msgs = [{"role": "system", "content": CHAT_SYSTEM_PROMPT}]
+        # 1. Hierarchical AGENTS.md loading
+        system_base = inject_agents_md(CHAT_SYSTEM_PROMPT, self._repo_path)
+        
+        msgs = [{"role": "system", "content": system_base}]
 
         # Inject repo context into the first system message
         if self._repo_context:
@@ -171,10 +183,13 @@ class ChatSession:
         if self._last_error:
             msgs[0]["content"] += f"\n\nLast error from running code:\n{self._last_error[-1000:]}"
 
-        # Add conversation history (keep last 20 turns to avoid token overflow)
-        history = self._messages[-40:]  # 20 turns = 40 messages (user + assistant)
-        for msg in history:
+        # Add conversation history
+        for msg in self._messages:
             msgs.append(msg.to_llm())
+
+        # 2. Context Window Management — Trim history if approaching limit
+        model_name = getattr(self._provider.config.llm, "model", "gpt-4o")
+        msgs = trim_history(msgs, model_name=model_name)
 
         return msgs
 
@@ -218,11 +233,13 @@ class ChatSession:
         RESEARCH -> EXECUTE -> SYNTHESIZE -> RESPOND
         """
         # 1. Add user message
-        self._messages.append(ChatMessage(
+        msg_user = ChatMessage(
             role="user",
             content=user_msg,
             timestamp=datetime.now().isoformat(),
-        ))
+        )
+        self._messages.append(msg_user)
+        save_message(self._session_id, msg_user.to_llm())
 
         max_turns = 3
         current_turn = 0
@@ -235,16 +252,20 @@ class ChatSession:
             # 2. Build and call
             print("ST_STEP:ANALYZING")
             llm_messages = self._build_llm_messages()
-            result = self._provider.complete(llm_messages)
-            response = self._parse_response(result.content)
+            # Enable streaming for interactive sessions
+            stream_mode = getattr(self, "interactive_mode", False)
+            result = self._provider.complete(llm_messages, stream=stream_mode)
+            response = self._parse_response(result.content or "")
             
             # 3. Add to history
-            self._messages.append(ChatMessage(
+            msg_assistant = ChatMessage(
                 role="assistant",
                 content=response.message,
                 timestamp=datetime.now().isoformat(),
                 action_taken=response.action.type if response.action else None,
-            ))
+            )
+            self._messages.append(msg_assistant)
+            save_message(self._session_id, msg_assistant.to_llm())
             
             last_response = response
 
@@ -259,15 +280,18 @@ class ChatSession:
                 action_res = self._execute_action(response.action)
                 
                 # feedback to LLM
-                self._messages.append(ChatMessage(
+                msg_obs = ChatMessage(
                     role="system",
                     content=f"Observation from {response.action.type} action:\n{action_res}",
                     timestamp=datetime.now().isoformat(),
-                ))
+                )
+                self._messages.append(msg_obs)
+                save_message(self._session_id, msg_obs.to_llm())
                 
                 # If it's research, we MUST have another turn to explain
                 if response.action.type == "research":
                     continue
+
                 
                 # For code changes, we return the plan and let the server handle it (legacy)
                 # But here we return so server can show the box
@@ -300,6 +324,16 @@ class ChatSession:
                 return f"🧠 **Research Findings:**\n\n{research_notes[:3000]}..."
             else:
                 return "Failed to find relevant files for research."
+
+        if action.type == "cd":
+            target_dir = action.run_command or action.task
+            new_path = os.path.abspath(os.path.join(self._repo_path, target_dir))
+            if os.path.isdir(new_path):
+                self._repo_path = new_path
+                self._load_repo_context()
+                return f"✅ Changed directory to `{self._repo_path}`. Workspace context updated."
+            else:
+                return f"❌ Directory `{new_path}` does not exist. Try creating it first using a `run` action."
 
         if action.type == "run":
 

@@ -9,7 +9,7 @@ from unittest.mock import patch, MagicMock
 import json
 
 from agent.config import AgentConfig, LLMConfig
-from agent.llm_provider import (
+from agent.core.llm_provider import (
     TogetherProvider,
     CompletionResult,
     ToolCallResult,
@@ -184,23 +184,26 @@ class TestStreamParsing(unittest.TestCase):
         """Test that streamed content tokens are reassembled."""
         mock_client = MagicMock()
 
-        # Create stream chunks
-        chunks = []
-        for text in ["Hello", ", ", "world", "!"]:
-            chunk = MagicMock()
-            delta = MagicMock()
-            delta.content = text
-            delta.tool_calls = None
-            chunk.choices = [MagicMock(delta=delta, finish_reason=None)]
-            chunks.append(chunk)
+        class Chunk:
+            def __init__(self, content, finish_reason=None):
+                self.choices = [self.Choice(content, finish_reason)]
+            class Choice:
+                def __init__(self, content, finish_reason):
+                    self.delta = self.Delta(content)
+                    self.finish_reason = finish_reason
+                class Delta:
+                    def __init__(self, content):
+                        self.content = content
+                        self.tool_calls = None
 
-        # Final chunk with finish_reason
-        final = MagicMock()
-        final_delta = MagicMock()
-        final_delta.content = None
-        final_delta.tool_calls = None
-        final.choices = [MagicMock(delta=final_delta, finish_reason="stop")]
-        chunks.append(final)
+        # Create stream chunks
+        chunks = [
+            Chunk("Hello"),
+            Chunk(", "),
+            Chunk("world"),
+            Chunk("!"),
+            Chunk(None, finish_reason="stop")
+        ]
 
         mock_client.chat.completions.create.return_value = iter(chunks)
 

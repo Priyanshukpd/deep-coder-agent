@@ -77,12 +77,18 @@ Focus on:
 3.  **Aesthetics**: If building UI, make it "World-Class" (Glassmorphism, Tailwind, Animation).
 4.  **Safety**: No hardcoded secrets, no SQL injection.
 5.  **Completeness**: Handle edge cases and errors gracefully.
+6.  **Surgical Edits**: If you are modifying an existing file (as indicated in the user prompt), you MUST output a standard UNIFIED DIFF (patch) instead of the full file content. This is more efficient for large files.
+    *   Format: Use standard `@@ -start,len +start,len @@` headers.
+    *   Include enough context lines (usually 3) for the patch to apply cleanly.
+    *   If you are creating a NEW file, output the COMPLETE source code.
 
 Rules:
 - You MUST explicitly analyze the requirements and project architecture before generating code.
 - Begin your response with an <analysis> block containing your Chain of Thought.
-- Then, provide the COMPLETE code in a markdown code block (```...```).
-- Output ONLY the complete source code inside the markdown block, no explanations outside of <analysis>."""
+- For NEW files: provide the COMPLETE code in a markdown code block (```...```).
+- For MODIFIED files: provide the UNIFIED DIFF in a markdown code block (```diff ... ```).
+- Output ONLY the requested code/diff block, no explanations outside of <analysis>."""
+
 
     TESTING_PROMPT = """You are a QA / Security Engineer.
 Your goal is to break the code and find bugs.

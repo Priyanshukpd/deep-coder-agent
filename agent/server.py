@@ -335,6 +335,42 @@ async def delete_file(session_id: str, path: str):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.get("/api/diff/{session_id}")
+async def get_diff(session_id: str):
+    """Get the git diff of the repository."""
+    if session_id not in sessions:
+        raise HTTPException(status_code=404, detail="Session not found.")
+    
+    session = sessions[session_id]
+    
+    try:
+        import subprocess
+        # Get standard git diff
+        result = subprocess.run(
+            ['git', 'diff'], 
+            cwd=session._repo_path, 
+            capture_output=True, 
+            text=True
+        )
+        diff_output = result.stdout
+        
+        # Also get untracked files
+        untracked = subprocess.run(
+            ['git', 'ls-files', '--others', '--exclude-standard'],
+            cwd=session._repo_path,
+            capture_output=True,
+            text=True
+        )
+        
+        if untracked.stdout.strip():
+            diff_output += "\n# Untracked files:\n"
+            for file in untracked.stdout.strip().split('\n'):
+                diff_output += f"# {file}\n"
+                
+        return {"diff": diff_output}
+    except Exception as e:
+        return {"diff": f"Error running git diff: {str(e)}"}
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)

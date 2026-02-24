@@ -284,39 +284,60 @@ class TogetherProvider:
             pass  # Don't crash on usage parsing failures
 
     def _collect_stream(self, stream_response: Any, cfg: LLMConfig) -> CompletionResult:
-        """Collect streamed tokens into a final CompletionResult."""
+        """Collect and stream tokens to terminal live."""
+        import sys
         content_parts: list[str] = []
         tool_call_parts: dict[int, dict] = {}  # index -> {name, args_chunks}
         finish_reason = None
+        content_started = False
 
         try:
             for chunk in stream_response:
+                # Handle usage in stream if provided
+                if hasattr(chunk, 'usage') and chunk.usage:
+                    self._track_usage(chunk)
+                    continue
+
                 if not hasattr(chunk, 'choices') or not chunk.choices:
                     continue
 
-                delta = chunk.choices[0].delta
+                choice = chunk.choices[0]
+                delta = choice.delta
 
-                # Collect content
-                if hasattr(delta, 'content') and delta.content:
-                    content_parts.append(delta.content)
+                # ── Content deltas ────────────────────────────────────────
+                content_delta = getattr(delta, 'content', None)
+                if content_delta:
+                    if not content_started:
+                        content_started = True
+                    sys.stdout.write(content_delta)
+                    sys.stdout.flush()
+                    content_parts.append(content_delta)
 
-                # Collect tool call deltas
-                if hasattr(delta, 'tool_calls') and delta.tool_calls:
-                    for tc_delta in delta.tool_calls:
-                        idx = tc_delta.index if hasattr(tc_delta, 'index') else 0
+                # ── Tool call deltas ──────────────────────────────────────
+                tc_deltas = getattr(delta, 'tool_calls', None)
+                if tc_deltas:
+                    for tc_delta in tc_deltas:
+                        idx = getattr(tc_delta, 'index', 0)
                         if idx not in tool_call_parts:
                             tool_call_parts[idx] = {"name": "", "args_chunks": []}
-                        if hasattr(tc_delta.function, 'name') and tc_delta.function.name:
-                            tool_call_parts[idx]["name"] = tc_delta.function.name
-                        if hasattr(tc_delta.function, 'arguments') and tc_delta.function.arguments:
-                            tool_call_parts[idx]["args_chunks"].append(tc_delta.function.arguments)
+                        fn = getattr(tc_delta, 'function', None)
+                        if fn:
+                            if getattr(fn, 'name', None):
+                                tool_call_parts[idx]["name"] = fn.name
+                            if getattr(fn, 'arguments', None):
+                                tool_call_parts[idx]["args_chunks"].append(fn.arguments)
 
-                # Capture finish reason
-                if hasattr(chunk.choices[0], 'finish_reason') and chunk.choices[0].finish_reason:
-                    finish_reason = chunk.choices[0].finish_reason
+                # ── Finish reason ─────────────────────────────────────────
+                fr = getattr(choice, 'finish_reason', None)
+                if fr:
+                    finish_reason = fr
 
         except Exception as e:
-            raise LLMConnectionError(f"Stream interrupted: {e}") from e
+            raise LLMConnectionError(f"Together stream interrupted: {e}") from e
+        finally:
+            if content_started:
+                sys.stdout.write("\n")
+                sys.stdout.flush()
 
         # Assemble tool calls
         tool_calls = []
@@ -326,9 +347,7 @@ class TogetherProvider:
             try:
                 args = json.loads(args_str) if args_str else {}
             except json.JSONDecodeError:
-                logger.warning(f"Failed to parse streamed tool call args: {args_str[:200]}")
                 args = {}
-
             tool_calls.append(ToolCallResult(
                 function_name=tc["name"],
                 arguments=args,
@@ -338,5 +357,5 @@ class TogetherProvider:
             content="".join(content_parts) if content_parts else None,
             tool_calls=tool_calls,
             finish_reason=finish_reason,
-            sampling_policy_hash=cfg.sampling_policy_hash,
+            sampling_policy_hash=cfg.sampling_policy_hash
         )

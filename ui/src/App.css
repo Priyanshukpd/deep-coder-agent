@@ -115,10 +115,11 @@ body {
 
 .main-layout {
   display: grid;
-  grid-template-columns: 280px 1fr 280px;
+  grid-template-columns: 260px minmax(400px, 1fr) minmax(500px, 1.5fr);
   flex: 1;
   overflow: hidden;
   position: relative;
+  background-color: var(--bg-color);
 }
 
 .sidebar {
@@ -332,43 +333,10 @@ body {
   padding: 1.5rem;
 }
 
-.code-viewer-pane {
-  display: flex;
-  flex-direction: column;
-  height: 100%;
-  background: #0f172a;
-}
-
-.code-viewer-header {
-  padding: 0.5rem 1rem;
-  background: var(--sidebar-bg);
-  border-bottom: 1px solid var(--glass-border);
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  font-size: 0.8rem;
-  color: var(--text-color);
-  opacity: 0.8;
-}
-
-.code-viewer-header button {
-  background: none;
-  border: none;
-  cursor: pointer;
-  color: #94a3b8;
-  padding: 2px 6px;
-  border-radius: 4px;
-}
-
-.code-viewer-header button:hover {
-  background: rgba(255, 255, 255, 0.1);
-  color: #ef4444;
-}
-
 .code-view-container {
   flex: 1;
   overflow: auto;
-  background: #0f172a;
+  background: var(--bg-color);
 }
 
 /* Override SyntaxHighlighter default pre styles if needed */
@@ -496,14 +464,14 @@ body {
 .chat-area {
   flex: 1;
   overflow-y: auto;
-  padding: 2rem;
-  padding-bottom: 120px;
-  /* Space for control bar */
+  padding: 1.5rem;
   scroll-behavior: smooth;
   display: flex;
   flex-direction: column;
   gap: 1rem;
   width: 100%;
+  background: var(--bg-color);
+  position: relative;
 }
 
 .message {
@@ -536,11 +504,11 @@ body {
 }
 
 .assistant .message-content {
-  background-color: #1e293b;
+  background-color: var(--bubble-assistant);
   border: 1px solid var(--glass-border);
   border-bottom-left-radius: 0.25rem;
   box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
-  color: #f1f5f9;
+  color: var(--text-color);
 }
 
 .message.system {
@@ -599,7 +567,7 @@ body {
 /* Action Block */
 .action-block {
   margin-top: 0.5rem;
-  background: #1e293b;
+  background: var(--sidebar-bg);
   border: 1px solid var(--glass-border);
   border-radius: 12px;
   overflow: hidden;
@@ -643,17 +611,25 @@ body {
   color: #64748b;
 }
 
-/* Control Bar (Fixed Bottom) */
-.control-bar {
-  background: rgba(15, 23, 42, 0.8);
-  backdrop-filter: blur(20px);
-  padding: 1.5rem 2rem;
-  border-top: 1px solid var(--glass-border);
+/* ── Center Column (Chat + Input) ── */
+.center-column {
   display: flex;
-  justify-content: center;
-  gap: 1rem;
-  z-index: 20;
-  box-shadow: 0 -10px 25px rgba(0, 0, 0, 0.3);
+  flex-direction: column;
+  height: 100%;
+  overflow: hidden;
+  border-right: 1px solid var(--glass-border);
+  background: var(--bg-color);
+}
+
+/* ── Floating Chat Input (Center Pane) ── */
+.center-input-container {
+  padding: 1rem;
+  background: var(--bg-color);
+  border-top: 1px solid var(--glass-border);
+  position: sticky;
+  bottom: 0;
+  width: 100%;
+  z-index: 10;
 }
 
 .mode-toggle {
@@ -688,53 +664,75 @@ body {
 
 .input-form {
   display: flex;
-  gap: 0.5rem;
-  flex: 1;
-  max-width: 600px;
+  align-items: center;
+  background: var(--input-bg);
+  border: 1px solid var(--glass-border);
+  border-radius: 16px;
+  padding: 0.5rem;
+  box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+  transition: all 0.2s;
+}
+
+.input-form:focus-within {
+  border-color: var(--accent-god);
+  box-shadow: 0 0 0 2px rgba(168, 85, 247, 0.2);
 }
 
 .input-form input {
   flex: 1;
-  padding: 0.75rem 1.25rem;
-  background: var(--input-bg);
-  border: 1px solid var(--glass-border);
-  border-radius: 12px;
-  font-size: 1rem;
+  padding: 0.5rem 1rem;
+  background: transparent;
+  border: none;
+  font-size: 0.95rem;
   color: var(--text-color);
   outline: none;
-  transition: all 0.2s;
-}
-
-.input-form input:focus {
-  border-color: var(--accent-copilot);
-  box-shadow: 0 0 0 2px rgba(74, 144, 226, 0.1);
-}
-
-.god-mode .input-form input:focus {
-  border-color: var(--accent-god);
-  box-shadow: 0 0 0 2px rgba(155, 89, 182, 0.1);
 }
 
 .input-form button {
-  padding: 0 1.5rem;
-  background: var(--accent-god);
-  color: white;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  background: var(--text-color);
+  color: var(--bg-color);
   border: none;
-  border-radius: 12px;
-  font-weight: 700;
+  border-radius: 50%;
   cursor: pointer;
-  box-shadow: 0 4px 14px rgba(168, 85, 247, 0.4);
   transition: transform 0.2s;
+  padding: 0;
 }
 
 .input-form button:hover:not(:disabled) {
-  transform: translateY(-2px);
-  filter: brightness(1.1);
+  transform: scale(1.05);
+  background: var(--accent-god);
+  color: white;
 }
 
 .input-form button:disabled {
-  background: #ccc;
+  opacity: 0.5;
   cursor: not-allowed;
+}
+
+/* ── Code Display Pane (Right) ── */
+.code-display-pane {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  background: var(--bg-color);
+  overflow: hidden;
+}
+
+.code-display-header {
+  padding: 0.75rem 1rem;
+  background: var(--sidebar-bg);
+  border-bottom: 1px solid var(--glass-border);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--text-color);
 }
 
 .typing-indicator {
@@ -748,8 +746,8 @@ body {
 /* Live Logs */
 .live-logs {
   margin-top: 1rem;
-  background: #1e293b;
-  color: #a5b4fc;
+  background: var(--input-bg);
+  color: var(--text-color);
   padding: 1rem;
   border-radius: 0.5rem;
   font-family: 'Menlo', 'Monaco', monospace;
@@ -757,8 +755,8 @@ body {
   white-space: pre-wrap;
   max-height: 400px;
   overflow-y: auto;
-  border: 1px solid #334155;
-  box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.2);
+  border: 1px solid var(--glass-border);
+  box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.05);
 }
 
 /* ── Agentic Execution UI ── */

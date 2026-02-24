@@ -15,7 +15,7 @@ function App() {
   const [files, setFiles] = useState([])
   const [expandedFolders, setExpandedFolders] = useState(new Set())
   const [selectedFile, setSelectedFile] = useState(null)
-  const [activeTab, setActiveTab] = useState('chat')
+  const [diffContent, setDiffContent] = useState(null)
   const messagesEndRef = useRef(null)
 
   useEffect(() => {
@@ -77,8 +77,27 @@ function App() {
         const data = await fRes.json()
         setFiles(data.files)
       }
+
+      const dRes = await fetch(`/api/diff/${session.session_id}`)
+      if (dRes.ok) {
+        const dData = await dRes.json()
+        setDiffContent(dData.diff || null)
+      }
     } catch (err) {
       console.error("Refresh failed", err)
+    }
+  }
+
+  const fetchDiff = async (sid = session?.session_id) => {
+    if (!sid) return
+    try {
+      const res = await fetch(`/api/diff/${sid}`)
+      if (res.ok) {
+        const data = await res.json()
+        setDiffContent(data.diff || null)
+      }
+    } catch (err) {
+      console.error("Diff fetch failed", err)
     }
   }
 
@@ -105,6 +124,13 @@ function App() {
       setIsLoading(false)
     }
   }
+
+  useEffect(() => {
+    // Phase 47: Auto-connect to current directory on initial load
+    if (!isConnected && !session && !isLoading) {
+      connectToRepo()
+    }
+  }, []) // Empty dependency array ensures this runs once on mount
 
   const sendMessage = async (e) => {
     e.preventDefault()
@@ -179,6 +205,9 @@ function App() {
       const data = await res.json()
       eventSource.close()
 
+      // Fetch diff after successful chat turn
+      fetchDiff(session.session_id)
+
       // Replace temp message with final, preserving logs
       setMessages(prev => prev.map(msg => {
         if (msg.id === tempMsgId) {
@@ -229,19 +258,11 @@ function App() {
 
   if (!isConnected) {
     return (
-      <div className="connect-screen">
-        <div className="card">
-          <h1>🤖 God Mode Agent</h1>
-          <p>Enter the absolute path to your repository to begin.</p>
-          <input
-            type="text"
-            value={repoPath}
-            onChange={e => setRepoPath(e.target.value)}
-            placeholder="/path/to/your/repo"
-          />
-          <button onClick={connectToRepo} disabled={isLoading}>
-            {isLoading ? "Connecting..." : "Connect"}
-          </button>
+      <div className={`app-container theme-${theme}`} style={{ display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+        <div style={{ textAlign: 'center' }}>
+          <div className="status-dot" style={{ width: '20px', height: '20px', margin: '0 auto 1rem', animation: 'statusPulse 1.5s infinite' }}></div>
+          <h2 style={{ margin: 0, fontWeight: 600, color: 'var(--text-color)', letterSpacing: '0.05em' }}>Initializing God Mode...</h2>
+          <p style={{ color: 'var(--text-color)', opacity: 0.6, fontSize: '0.9rem', marginTop: '0.5rem' }}>Syncing local workspace context</p>
         </div>
       </div>
     )
@@ -393,203 +414,172 @@ function App() {
       </header>
 
       <div className="main-layout">
-        <aside className="sidebar left">
+        <aside className="sidebar left threads-sidebar">
           <div className="sidebar-section">
-            <h3>📂 Project Context</h3>
-            <div className="sidebar-item">
-              <div className="sidebar-label">Path</div>
-              <div className="sidebar-value">{session?.repo_path}</div>
+            <h3 style={{ fontSize: '0.8rem', textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--text-color)', opacity: 0.7, padding: '0.5rem 0' }}>Threads</h3>
+            <div className="thread-item active" style={{ padding: '0.75rem', borderRadius: '8px', background: 'rgba(168, 85, 247, 0.1)', border: '1px solid rgba(168, 85, 247, 0.2)', marginBottom: '0.5rem', cursor: 'pointer' }}>
+              <div style={{ fontWeight: 600, fontSize: '0.9rem', color: 'var(--text-color)' }}>Current Session</div>
+              <div style={{ fontSize: '0.75rem', color: 'var(--text-color)', opacity: 0.6, marginTop: '0.2rem' }}>{session?.repo_path?.split('/').pop() || 'Workspace'}</div>
             </div>
-            <div className="sidebar-item">
-              <div className="sidebar-label">Files</div>
-              <div className="sidebar-value">{session?.file_count} identified</div>
-            </div>
-            <div className="sidebar-item">
-              <div className="sidebar-label">Stack</div>
-              <div className="sidebar-value">{session?.stack}</div>
+            {/* Placeholder for past threads */}
+            <div className="thread-item" style={{ padding: '0.75rem', borderRadius: '8px', marginBottom: '0.5rem', cursor: 'pointer', opacity: 0.7 }}>
+              <div style={{ fontWeight: 500, fontSize: '0.9rem', color: 'var(--text-color)' }}>Implement dark mode</div>
+              <div style={{ fontSize: '0.75rem', color: 'var(--text-color)', opacity: 0.6, marginTop: '0.2rem' }}>8h ago</div>
             </div>
           </div>
 
-          <div className="sidebar-section">
-            <div className="sidebar-header">
-              <h3>🌳 File Tree</h3>
-              <button className="refresh-btn" onClick={refreshFiles} title="Refresh Tree">🔄</button>
+          <div className="sidebar-section" style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', marginTop: '1rem' }}>
+            <div className="sidebar-header" style={{ marginBottom: '1rem' }}>
+              <h3 style={{ fontSize: '0.8rem', textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--text-color)', opacity: 0.7, margin: 0 }}>Workspace Files</h3>
+              <button className="refresh-btn" onClick={refreshFiles} title="Refresh Files">🔄</button>
             </div>
-            <div className="file-tree">
-              {(() => {
-                const tree = buildFileTree(files)
-                const repoName = session?.repo_path?.split('/').pop() || 'Project'
-                return renderTree(tree, repoName, "", 0)
-              })()}
+            <div className="file-tree" style={{ flex: 1, overflowY: 'auto' }}>
+              {renderTree(buildTree(files), session?.repo_path?.split('/').pop() || "project_root")}
             </div>
           </div>
         </aside>
 
-        <div className="chat-area">
-          <div className="tab-bar">
-            <button
-              className={`tab ${activeTab === 'chat' ? 'active' : ''}`}
-              onClick={() => setActiveTab('chat')}
-            >
-              💬 Chat
-            </button>
-            <button
-              className={`tab ${activeTab === 'code' ? 'active' : ''}`}
-              onClick={() => setActiveTab('code')}
-              disabled={!selectedFile}
-            >
-              📄 {selectedFile ? selectedFile.path.split('/').pop() : 'Viewer'}
-            </button>
-          </div>
-
-          <div className="tab-content">
-            {activeTab === 'chat' ? (
-              <div className="messages-container">
-                {messages.map((msg, idx) => (
-                  <div key={idx} className={`message ${msg.role} ${msg.isError ? 'error' : ''}`}>
-                    <div className="message-content">
-                      {msg.role === 'assistant' && (msg.phases || msg.logs?.length > 0) && (
-                        <div className="agent-execution-block">
-                          <details className="execution-status" open={msg.isLoading}>
-                            <summary>
-                              <div className={`status-summary ${msg.isLoading ? 'isLoading' : ''}`}>
-                                <span className="status-dot"></span>
-                                <span className="status-text">
-                                  {msg.isLoading ? `Agent is ${msg.currentStep || 'working'}...` : 'Execution Steps'}
-                                </span>
-                              </div>
-                            </summary>
-                            <div className="phase-stepper">
-                              {(msg.phases || []).map((p, i) => {
-                                const labels = {
-                                  'ANALYZING': 'Analyzing Requirements',
-                                  'RESEARCHING': 'Researching Codebase',
-                                  'PLANNING': 'Developing Plan',
-                                  'EXECUTING': 'Implementing Changes',
-                                  'REFLECTING': 'Refining Code Quality',
-                                  'VERIFYING': 'Visual Verification',
-                                  'SYNCING': 'Finalizing Logs',
-                                  'DONE': 'Task Complete'
-                                };
-                                return (
-                                  <div key={i} className={`phase-item ${p.status}`}>
-                                    <span className="phase-icon">
-                                      {p.status === 'done' ? '✅' : '⏳'}
-                                    </span>
-                                    {labels[p.name] || p.name}
-                                  </div>
-                                );
-                              })}
+        <div className="center-column">
+          <div className="chat-area" style={{ borderRight: 'none' }}>
+            <div className="messages-container">
+              {messages.map((msg, idx) => (
+                <div key={idx} className={`message ${msg.role} ${msg.isError ? 'error' : ''}`}>
+                  <div className="message-content">
+                    {msg.role === 'assistant' && (msg.phases || msg.logs?.length > 0) && (
+                      <div className="agent-execution-block">
+                        <details className="execution-status" open={msg.isLoading}>
+                          <summary>
+                            <div className={`status-summary ${msg.isLoading ? 'isLoading' : ''}`}>
+                              <span className="status-dot"></span>
+                              <span className="status-text">
+                                {msg.isLoading ? `Agent is ${msg.currentStep || 'working'}...` : 'Execution Steps'}
+                              </span>
                             </div>
-                            {msg.logs && msg.logs.length > 0 && (
-                              <div className="live-logs">
-                                {msg.logs.map((logLine, i) => <div key={i}>{logLine}</div>)}
-                              </div>
-                            )}
-                          </details>
-                        </div>
-                      )}
-
-                      <div className="bubble-text">
-                        {msg.content.split('\n').map((line, i) => <div key={i}>{line}</div>)}
-                      </div>
-                    </div>
-                    {msg.action && (
-                      <div className="action-block">
-                        <div className="action-header">⚡ Executing: {msg.action.type}</div>
-                        <pre className="action-task">{msg.action.task}</pre>
-                        {msg.execution_result && (
-                          <div className="execution-result">
-                            <div className="result-label">Result:</div>
-                            <pre>{msg.execution_result}</pre>
+                          </summary>
+                          <div className="phase-stepper">
+                            {(msg.phases || []).map((p, i) => {
+                              const labels = {
+                                'ANALYZING': 'Analyzing Requirements',
+                                'RESEARCHING': 'Researching Codebase',
+                                'PLANNING': 'Developing Plan',
+                                'EXECUTING': 'Implementing Changes',
+                                'REFLECTING': 'Refining Code Quality',
+                                'VERIFYING': 'Visual Verification',
+                                'SYNCING': 'Finalizing Logs',
+                                'DONE': 'Task Complete'
+                              };
+                              return (
+                                <div key={i} className={`phase-item ${p.status}`}>
+                                  <span className="phase-icon">
+                                    {p.status === 'done' ? '✅' : '⏳'}
+                                  </span>
+                                  {labels[p.name] || p.name}
+                                </div>
+                              );
+                            })}
                           </div>
-                        )}
+                          {msg.logs && msg.logs.length > 0 && (
+                            <div className="live-logs">
+                              {msg.logs.map((logLine, i) => <div key={i}>{logLine}</div>)}
+                            </div>
+                          )}
+                        </details>
                       </div>
                     )}
-                    <div className="timestamp">{new Date(msg.timestamp).toLocaleTimeString()}</div>
+
+                    <div className="bubble-text">
+                      {msg.content.split('\n').map((line, i) => <div key={i}>{line}</div>)}
+                    </div>
                   </div>
-                ))}
-                <div ref={messagesEndRef} />
-                {isLoading && <div className="typing-indicator">Thinking...</div>}
+                  {msg.action && (
+                    <div className="action-block">
+                      <div className="action-header">⚡ Executing: {msg.action.type}</div>
+                      <pre className="action-task">{msg.action.task}</pre>
+                      {msg.execution_result && (
+                        <div className="execution-result">
+                          <div className="result-label">Result:</div>
+                          <pre>{msg.execution_result}</pre>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                  <div className="timestamp">{new Date(msg.timestamp).toLocaleTimeString()}</div>
+                </div>
+              ))}
+              <div ref={messagesEndRef} />
+              {isLoading && <div className="typing-indicator">Thinking...</div>}
+            </div>
+            {isLoading && <div className="typing-indicator">Thinking...</div>}
+          </div>
+
+          {/* ── Inline Chat Input ── */}
+          <div className="center-input-container">
+            <form onSubmit={sendMessage} className="input-form">
+              <input
+                type="text"
+                value={input}
+                onChange={e => setInput(e.target.value)}
+                placeholder={isInteractive ? "Command your Co-pilot..." : "Ask God Mode anything..."}
+                disabled={isLoading}
+              />
+              <button type="submit" disabled={isLoading || !input.trim()}>
+                ↑
+              </button>
+            </form>
+          </div>
+        </div>
+
+        {/* ── Right Pane: Code Viewer & Diff ── */}
+        <div className="code-display-pane">
+          <div className="code-display-header">
+            <span>{selectedFile ? selectedFile.path.split('/').pop() : 'Workspace Changes'}</span>
+            <div style={{ display: 'flex', gap: '0.5rem' }}>
+              <button style={{ background: 'var(--bg-color)', border: '1px solid var(--glass-border)', color: 'var(--text-color)', padding: '0.2rem 0.6rem', borderRadius: '4px', fontSize: '0.75rem', cursor: 'pointer', fontWeight: 600 }}>Open</button>
+              <button style={{ background: 'transparent', border: '1px solid var(--glass-border)', color: 'var(--text-color)', padding: '0.2rem 0.6rem', borderRadius: '4px', fontSize: '0.75rem', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '0.3rem' }}><span style={{ fontSize: '0.9rem' }}>⎇</span> Commit</button>
+            </div>
+          </div>
+          <div className="code-view-container" style={{ flex: 1, overflowY: 'auto' }}>
+            {diffContent ? (
+              <div className="diff-viewer" style={{ padding: '1rem', fontSize: '0.85rem', fontFamily: 'monospace', lineHeight: 1.5 }}>
+                {diffContent.split('\n').map((line, idx) => {
+                  if (line.startsWith('--- a/') || line.startsWith('+++ b/') || line.startsWith('diff --git') || line.startsWith('index ')) {
+                    return <div key={idx} style={{ color: 'var(--accent-god)', fontWeight: 600, marginTop: '1rem', paddingBottom: '0.5rem', borderBottom: '1px solid var(--glass-border)' }}>{line}</div>;
+                  }
+                  if (line.startsWith('@@')) {
+                    return <div key={idx} style={{ color: 'var(--accent-copilot)', padding: '0.5rem 0', opacity: 0.8 }}>{line}</div>;
+                  }
+                  if (line.startsWith('+') && !line.startsWith('+++')) {
+                    return <div key={idx} className="diff-add" style={{ backgroundColor: 'rgba(34, 197, 94, 0.1)', color: '#22c55e', padding: '0 0.5rem' }}>{line}</div>;
+                  }
+                  if (line.startsWith('-') && !line.startsWith('---')) {
+                    return <div key={idx} className="diff-remove" style={{ backgroundColor: 'rgba(239, 68, 68, 0.1)', color: '#ef4444', padding: '0 0.5rem' }}>{line}</div>;
+                  }
+                  return <div key={idx} style={{ color: 'var(--text-color)', padding: '0 0.5rem', opacity: 0.8 }}>{line}</div>;
+                })}
               </div>
+            ) : selectedFile ? (
+              <SyntaxHighlighter
+                language={getLanguage(selectedFile.path)}
+                style={theme === 'dark' ? vscDarkPlus : oneLight}
+                customStyle={{
+                  margin: 0,
+                  padding: '1.5rem',
+                  fontSize: '0.85rem',
+                  lineHeight: '1.6',
+                  height: '100%',
+                  background: 'transparent'
+                }}
+              >
+                {selectedFile.content}
+              </SyntaxHighlighter>
             ) : (
-              <div className="code-viewer-pane">
-                <div className="code-viewer-header">
-                  <span>{selectedFile.path}</span>
-                  <button onClick={() => setSelectedFile(null) || setActiveTab('chat')}>✕</button>
-                </div>
-                <div className="code-view-container">
-                  <SyntaxHighlighter
-                    language={getLanguage(selectedFile.path)}
-                    style={oneLight}
-                    customStyle={{
-                      margin: 0,
-                      padding: '1.5rem',
-                      fontSize: '0.9rem',
-                      lineHeight: '1.6',
-                      height: '100%',
-                      background: 'transparent'
-                    }}
-                  >
-                    {selectedFile.content}
-                  </SyntaxHighlighter>
-                </div>
+              <div style={{ padding: '2rem', color: 'var(--text-color)', opacity: 0.5, textAlign: 'center' }}>
+                No active changes in the workspace.
               </div>
             )}
           </div>
         </div>
-
-        <aside className="sidebar right">
-          <div className="sidebar-section">
-            <h3>📊 Execution Stats</h3>
-            <div className="sidebar-item">
-              <div className="sidebar-label">Turn Count</div>
-              <div className="sidebar-value">{status?.turn_count || session?.turn_count || 0}</div>
-            </div>
-            <div className="sidebar-item">
-              <div className="sidebar-label">Total Tokens</div>
-              <div className="sidebar-value">{(status?.tokens?.total || 0).toLocaleString()}</div>
-            </div>
-            <div className="sidebar-item">
-              <div className="sidebar-label">Input / Output</div>
-              <div className="sidebar-value">
-                {(status?.tokens?.input || 0).toLocaleString()} / {(status?.tokens?.output || 0).toLocaleString()}
-              </div>
-            </div>
-          </div>
-
-          <div className="sidebar-section">
-            <h3>🧩 Current Mode</h3>
-            <div className={`sidebar-value ${isInteractive ? 'interactive' : 'god-mode'}`} style={{ color: isInteractive ? 'var(--accent-copilot)' : 'var(--accent-god)' }}>
-              {isInteractive ? "🤝 Co-Pilot" : "✨ God Mode"}
-            </div>
-            <p style={{ fontSize: '0.8rem', color: '#64748b', marginTop: '0.5rem' }}>
-              {isInteractive ? "Agent asks for approval before taking action." : "Agent operates autonomously to achieve the goal."}
-            </p>
-          </div>
-        </aside>
       </div>
-
-      <div className="control-bar">
-        <button
-          className={`mode-toggle ${isInteractive ? 'copilot' : 'god'}`}
-          onClick={toggleMode}
-        >
-          {isInteractive ? "🚀 Switch to God Mode" : "✋ Switch to Co-Pilot"}
-        </button>
-
-        <form onSubmit={sendMessage} className="input-form">
-          <input
-            type="text"
-            value={input}
-            onChange={e => setInput(e.target.value)}
-            placeholder={isInteractive ? "Command your Co-pilot..." : "Give God Mode a task..."}
-            disabled={isLoading}
-          />
-          <button type="submit" disabled={isLoading || !input.trim()}>Send</button>
-        </form>
-      </div>
-
     </div>
   )
 }

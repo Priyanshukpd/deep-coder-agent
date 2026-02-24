@@ -254,7 +254,10 @@ def run_classify(task: str, repo_path: str = None):
 
 def run_full_pipeline(task: str, repo_path: str = ".", dry_run: bool = False,
                       yes: bool = False, auto_commit: bool = False,
-                      rollback_on_fail: bool = True):
+                      rollback_on_fail: bool = True,
+                      provider_name: Optional[str] = None,
+                      model_name: Optional[str] = None,
+                      sandbox_mode: Optional[str] = None):
     """Run the full agent pipeline for a task."""
     from agent.config import AgentConfig
     from agent.planning.intent import IntentClassifier
@@ -263,7 +266,22 @@ def run_full_pipeline(task: str, repo_path: str = ".", dry_run: bool = False,
     from agent.security.preconditions import PreconditionChecker
 
     config = AgentConfig()
+    
+    # ── CLI Overrides ──
+    if provider_name or model_name:
+        from agent.config import LLMConfig
+        object.__setattr__(config, "provider", provider_name or config.provider)
+        if model_name:
+            new_llm = LLMConfig(model=model_name)
+            object.__setattr__(config, "llm", new_llm)
+
+    # Initialize Sandbox
+    from agent.core.sandbox import Sandbox
+    mode_str = sandbox_mode or os.environ.get("AGENT_SANDBOX", "full-access")
+    sandbox = Sandbox(repo_path, mode=mode_str)
+
     exec_log = ExecutionLog(repo_path)
+
     rollback_mgr = RollbackManager(repo_path)
     start_time = time.time()
     intent_str = ""
@@ -338,19 +356,21 @@ def run_full_pipeline(task: str, repo_path: str = ".", dry_run: bool = False,
     print(f"  Violations: {len(budget.violations)}")
     exec_log.add("risk_budget", "ok", f"exhausted={budget.is_exhausted}")
 
-    # ── Step 6: Execute Task ──
+    # ── Step 6: Execution ──
     if not config.has_api_key:
         print("\n⚠️  No API key — skipping code generation")
         exec_log.add("execution", "skipped", "no API key")
         exec_log.save()
         return True
 
-    from agent.core.factory import create_provider
-    from agent.core.task_executor import TaskExecutor
-
     print("─── Step 6: Task Execution ───")
+    from agent.core.provider_factory import create_provider
+    from agent.core.task_executor import TaskExecutor
+    
     provider = create_provider(config)
     executor = TaskExecutor(provider, repo_path)
+    sandbox = Sandbox(sandbox_mode)
+    executor.set_sandbox(sandbox)
 
     def _display_plan(plan):
         print(f"\n📋 Plan: {plan.summary}")
@@ -445,20 +465,41 @@ def run_full_pipeline(task: str, repo_path: str = ".", dry_run: bool = False,
 
 # ── Chat Mode (Persistent) ──────────────────────────────────────
 
-def run_chat(repo_path: str = "."):
+def run_chat(repo_path: str = ".", session_id: Optional[str] = None, 
+             provider_name: Optional[str] = None, model_name: Optional[str] = None):
     """Persistent chat mode with conversation memory."""
-    from agent.config import AgentConfig
+    from agent.config import AgentConfig, LLMConfig
     config = AgentConfig()
+    
+    if provider_name or model_name:
+        object.__setattr__(config, "provider", provider_name or config.provider)
+        if model_name:
+            new_llm = LLMConfig(model=model_name)
+            object.__setattr__(config, "llm", new_llm)
 
     if not config.has_api_key:
         print("\n⚠️  No API key configured. Set TOGETHER_API_KEY to use chat mode.")
         return
 
-    from agent.core.factory import create_provider
-    from agent.core.chat import ChatSession
+    from agent.core.provider_factory import create_provider
+    from agent.core.chat import ChatSession, ChatMessage
+    from agent.core.session_store import load_session
 
     provider = create_provider(config)
     session = ChatSession(provider, repo_path)
+    
+    if session_id:
+        print(f"🔄 Resuming session: {session_id}")
+        history = load_session(session_id)
+        # Convert dict to ChatMessage objects
+        session._messages = [
+            ChatMessage(role=m["role"], content=m["content"]) 
+            for m in history
+        ]
+        session._session_id = session_id
+        print(f"✅ Loaded {len(session._messages)} messages.")
+
+    session.interactive_mode = True # Default for CLI chat
     session.loop()
 
 
@@ -633,9 +674,24 @@ def main():
         help="Start legacy stateless REPL mode",
     )
     parser.add_argument(
+        "--provider", metavar="PROVIDER", default=None,
+        help="LLM provider: together, openai, openrouter, ollama",
+    )
+    parser.add_argument(
+        "--model", metavar="MODEL", default=None,
+        help="LLM model name",
+    )
+    parser.add_argument(
+        "--sandbox", metavar="MODE", default=None,
+        help="Sandbox mode: read-only, workspace-write, full-access",
+    )
+    parser.add_argument(
         "--version", "-v", action="version",
         version=f"God Mode Agent v{VERSION}",
     )
+
+    # Resume command
+    resume_parser = subparsers.add_parser("resume", help="Resume a past conversation")
 
     args = parser.parse_args()
 
@@ -655,8 +711,14 @@ def main():
         run_scan(args.scan)
     elif args.classify:
         run_classify(args.classify, repo_path=args.repo)
+    elif args.command == "resume":
+        from agent.core.session_store import print_sessions
+        sid = print_sessions()
+        if sid:
+            run_chat(repo_path=args.repo, session_id=sid, provider_name=args.provider, model_name=args.model)
+        sys.exit(0)
     elif args.interactive:
-        run_chat(repo_path=args.repo)
+        run_chat(repo_path=args.repo, provider_name=args.provider, model_name=args.model)
     elif args.ui:
         run_web_ui(repo_path=args.repo)
     elif args.legacy_repl:
@@ -671,6 +733,9 @@ def main():
             dry_run=args.dry_run, yes=args.yes,
             auto_commit=args.commit,
             rollback_on_fail=should_rollback,
+            provider_name=args.provider,
+            model_name=args.model,
+            sandbox_mode=args.sandbox
         )
         sys.exit(0 if success else 1)
 

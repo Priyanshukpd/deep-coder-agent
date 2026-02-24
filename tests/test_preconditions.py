@@ -2,11 +2,11 @@ import unittest
 from unittest.mock import patch, MagicMock
 import tempfile
 import os
-from agent.preconditions import PreconditionChecker, PreconditionViolation
+from agent.security.preconditions import PreconditionChecker, PreconditionViolation
 
 class TestPreconditions(unittest.TestCase):
 
-    @patch("agent.preconditions.subprocess.run")
+    @patch("agent.security.preconditions.subprocess.run")
     def test_git_head_capture(self, mock_run):
         # Setup mock
         mock_result = MagicMock()
@@ -17,7 +17,7 @@ class TestPreconditions(unittest.TestCase):
         head = PreconditionChecker.get_git_head()
         self.assertEqual(head, "abcdef123456")
 
-    @patch("agent.preconditions.PreconditionChecker.get_git_head")
+    @patch("agent.security.preconditions.PreconditionChecker.get_git_head")
     def test_git_consistency_check(self, mock_get_head):
         # Scenario 1: Match
         mock_get_head.return_value = "hash1"

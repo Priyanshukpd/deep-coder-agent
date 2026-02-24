@@ -8,8 +8,8 @@ import unittest
 from unittest.mock import MagicMock, patch
 
 from agent.state import TaskIntent, IntentResult
-from agent.intent import IntentClassifier, _INTENT_MAP
-from agent.llm_provider import ToolCallResult, LLMConnectionError
+from agent.planning.intent import IntentClassifier, _INTENT_MAP
+from agent.core.llm_provider import ToolCallResult, LLMConnectionError
 
 
 class TestIntentClassifierLLM(unittest.TestCase):
