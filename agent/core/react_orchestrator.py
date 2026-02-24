@@ -64,7 +64,12 @@ class ReActOrchestrator:
             print(f"  🛠️  Action: {step.action}({json.dumps(step.action_input)})")
             
             if step.action == "finish":
-                # Phase 69: Transcript Audit
+                # Phase 69: Transcript Audit (Optimized)
+                # Decision: Skip audit for trivial tasks (<= 2 steps) to reduce latency
+                if len(self._history) <= 2:
+                    print(f"  🏁 Task complete (Trivial task - skipping audit)")
+                    return True
+                
                 from agent.verification.transcript_auditor import TranscriptAuditor
                 auditor = TranscriptAuditor(self._provider)
                 # If we don't have full_history, use the orchestrator's own history

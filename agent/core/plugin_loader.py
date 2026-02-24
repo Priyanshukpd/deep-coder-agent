@@ -22,6 +22,7 @@ class PluginLoader:
         self.repo_path = repo_path
         self.marketplace_path = os.path.join(repo_path, MARKETPLACE_FILE)
         self.plugins_metadata = self._load_metadata()
+        self._instances: Dict[str, Any] = {}
 
     def _load_metadata(self) -> list:
         if os.path.exists(self.marketplace_path):
@@ -59,14 +60,45 @@ class PluginLoader:
             logger.error(f"Failed to load plugin {plugin_id}: {e}")
             return None
 
-    def get_all_plugins(self) -> Dict[str, Any]:
-        """Load all registered plugins."""
-        instances = {}
-        for meta in self.plugins_metadata:
-            klass = self.load_plugin(meta["id"])
-            if klass:
-                try:
-                    instances[meta["id"]] = klass()
-                except Exception as e:
-                    logger.error(f"Failed to instantiate {meta['id']}: {e}")
-        return instances
+    def get_instance(self, plugin_id: str) -> Any:
+        """Get or create a cached instance of a plugin."""
+        if plugin_id in self._instances:
+            return self._instances[plugin_id]
+
+        klass = self.load_plugin(plugin_id)
+        if klass:
+            try:
+                instance = klass()
+                self._instances[plugin_id] = instance
+                return instance
+            except Exception as e:
+                logger.error(f"Failed to instantiate {plugin_id}: {e}")
+        return None
+
+    def get_all_plugin_ids(self) -> list:
+        """Get IDs of all registered plugins."""
+        return [p["id"] for p in self.plugins_metadata]
+
+    def register_plugin(self, plugin_id: str, name: str, path: str, class_name: str, description: str):
+        """Programmatically register a new plugin in the marketplace."""
+        # Check if already exists
+        if any(p["id"] == plugin_id for p in self.plugins_metadata):
+            logger.warning(f"Plugin {plugin_id} already registered. Updating...")
+            self.plugins_metadata = [p for p in self.plugins_metadata if p["id"] != plugin_id]
+
+        new_entry = {
+            "id": plugin_id,
+            "name": name,
+            "path": path,
+            "class": class_name,
+            "description": description
+        }
+        self.plugins_metadata.append(new_entry)
+
+        # Persist to disk
+        try:
+            with open(self.marketplace_path, 'w', encoding='utf-8') as f:
+                json.dump({"plugins": self.plugins_metadata}, f, indent=2)
+            logger.info(f"Plugin {plugin_id} registered successfully.")
+        except Exception as e:
+            logger.error(f"Failed to persist plugin registration: {e}")

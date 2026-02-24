@@ -185,16 +185,6 @@ class TaskExecutor:
         self._sandbox = SandboxedRunner(working_directory=self._repo_path)
         self._plugin_loader = PluginLoader(self._repo_path)
         
-        # Phase 70: Dynamic Plugin Loading
-        plugins = self._plugin_loader.get_all_plugins()
-        self.docker_inspector = plugins.get("docker_inspector")
-        self.db_inspector = plugins.get("db_inspector")
-        self.browser_tester = plugins.get("browser_tester")
-        self.doc_crawler = plugins.get("doc_crawler")
-        self.lsp_tool = plugins.get("lsp")
-        self.visual_tool = plugins.get("visual")
-        self.security_advisor = plugins.get("security_advisor")
-
         self.prompt_manager = prompt_manager
 
         self._approval_callback = None
@@ -205,6 +195,35 @@ class TaskExecutor:
         """Set a callback for interactive approval: callback(stage, details) -> bool."""
         self._approval_callback = callback
         self._sandbox.set_approval_callback(callback)
+
+    # -- Lazy Loaded Plugins (Phase 70 Optimization) --
+    @property
+    def docker_inspector(self):
+        return self._plugin_loader.get_instance("docker_inspector")
+
+    @property
+    def db_inspector(self):
+        return self._plugin_loader.get_instance("db_inspector")
+
+    @property
+    def browser_tester(self):
+        return self._plugin_loader.get_instance("browser_tester")
+
+    @property
+    def doc_crawler(self):
+        return self._plugin_loader.get_instance("doc_crawler")
+
+    @property
+    def lsp_tool(self):
+        return self._plugin_loader.get_instance("lsp")
+
+    @property
+    def visual_tool(self):
+        return self._plugin_loader.get_instance("visual")
+
+    @property
+    def security_advisor(self):
+        return self._plugin_loader.get_instance("security_advisor")
     
     def add_feedback(self, feedback: str):
         """Add additional user comments or tasks to the current context."""
