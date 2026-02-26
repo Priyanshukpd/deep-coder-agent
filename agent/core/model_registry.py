@@ -28,6 +28,11 @@ class ModelMeta:
 
 _REGISTRY: dict[str, ModelMeta] = {
     # Together AI
+    "Qwen/Qwen3-Coder-Next-FP8": ModelMeta(
+        name="Qwen/Qwen3-Coder-Next-FP8",
+        context_window=262144, max_output_tokens=32768,
+        supports_tools=True, provider_hint="together"
+    ),
     "Qwen/Qwen3-Coder-480B-A35B-Instruct-FP8": ModelMeta(
         name="Qwen/Qwen3-Coder-480B-A35B-Instruct-FP8",
         context_window=262144, max_output_tokens=32768,

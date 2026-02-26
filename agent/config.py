@@ -23,7 +23,7 @@ class LLMConfig:
     """
 
     # Model
-    model: str = field(default_factory=lambda: os.environ.get("TOGETHER_MODEL", "Qwen/Qwen3-Coder-480B-A35B-Instruct-FP8"))
+    model: str = field(default_factory=lambda: os.environ.get("TOGETHER_MODEL", "Qwen/Qwen3-Coder-Next-FP8"))
 
     # Sampling — Architecture defaults (deterministic)
     temperature: float = 0.0
@@ -85,7 +85,7 @@ PROVIDER_CONFIGS: dict[str, ProviderConfig] = {
         name="together",
         base_url="https://api.together.xyz/v1",
         env_key="TOGETHER_API_KEY",
-        default_model="Qwen/Qwen3-Coder-480B-A35B-Instruct-FP8",
+        default_model="Qwen/Qwen3-Coder-Next-FP8",
     ),
     "openai": ProviderConfig(
         name="openai",
