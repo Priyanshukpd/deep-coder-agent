@@ -53,109 +53,118 @@ class ReActOrchestrator:
         print(f"\n🚀 Starting autonomous ReAct loop for task: {task[:100]}...")
         
         stuck_hint = ""
-        for step_num in range(1, self._max_steps + 1):
-            remaining_turns = self._max_steps - step_num + 1
-            elapsed_time = time.time() - self._start_time
-            remaining_seconds = max(0, int(self._total_timeout - elapsed_time))
-            
-            print(f"\n🧠 Turn {step_num}/{self._max_steps} | ⏳ {remaining_seconds}s remaining")
-            
-            # 1. Think & Act
-            thought_action = self._decide_next_step(
-                task, 
-                intent, 
-                stuck_hint=stuck_hint,
-                remaining_turns=remaining_turns,
-                remaining_seconds=remaining_seconds
-            )
-            stuck_hint = "" # Reset hint after use
-            
-            if not thought_action:
-                logger.error("Failed to decide next step.")
-                self._print_failure_summary(task, "LLM failed to produce a valid action (parse error)")
-                return False
+        try:
+            for step_num in range(1, self._max_steps + 1):
+                remaining_turns = self._max_steps - step_num + 1
+                elapsed_time = time.time() - self._start_time
+                remaining_seconds = max(0, int(self._total_timeout - elapsed_time))
                 
-            step = ReActStep(
-                thought=thought_action.get("thought", ""),
-                action=thought_action.get("action", ""),
-                action_input=thought_action.get("action_input", {})
-            )
+                print(f"\n🧠 Turn {step_num}/{self._max_steps} | ⏳ {remaining_seconds}s remaining")
             
-            print(f"  🤔 Thought: {step.thought}")
-            print(f"  🛠️  Action: {step.action}({json.dumps(step.action_input)})")
+                # 1. Think & Act
+                thought_action = self._decide_next_step(
+                    task, 
+                    intent, 
+                    stuck_hint=stuck_hint,
+                    remaining_turns=remaining_turns,
+                    remaining_seconds=remaining_seconds
+                )
+                stuck_hint = "" # Reset hint after use
             
-            # Phase 82: Persistent Logging for ReAct turns
-            self._executor.readable_logger.log_thought(step.thought)
-            self._executor.readable_logger.log_action(step.action, json.dumps(step.action_input))
+                if not thought_action:
+                    logger.error("Failed to decide next step.")
+                    self._print_failure_summary(task, "LLM failed to produce a valid action (parse error)")
+                    return False
+                
+                step = ReActStep(
+                    thought=thought_action.get("thought", ""),
+                    action=thought_action.get("action", ""),
+                    action_input=thought_action.get("action_input", {})
+                )
+            
+                print(f"  🤔 Thought: {step.thought}")
+                print(f"  🛠️  Action: {step.action}({json.dumps(step.action_input)})")
+            
+                # Phase 82: Persistent Logging for ReAct turns
+                self._executor.readable_logger.log_thought(step.thought)
+                self._executor.readable_logger.log_action(step.action, json.dumps(step.action_input))
 
-            # Phase 83: Loop Detection
-            current_action_tuple = (step.action, json.dumps(step.action_input, sort_keys=True))
-            self._action_history.append(current_action_tuple)
+                # Phase 83: Loop Detection
+                current_action_tuple = (step.action, json.dumps(step.action_input, sort_keys=True))
+                self._action_history.append(current_action_tuple)
             
-            # Check for repetition (e.g., 3 identical calls in a row)
-            if len(self._action_history) >= 3:
-                recent = self._action_history[-3:]
-                if all(a == current_action_tuple for a in recent):
-                    stuck_hint = (
-                        f"SYSTEM WARNING: You have performed action '{step.action}' with the same inputs "
-                        "3 times in a row. You are likely STUCK. Do NOT repeat this again. "
-                        "Try a different tool, check for missing configuration files, or verify "
-                        "if your assumptions about the environment are correct."
-                    )
-                    print(f"  ⚠️  Loop detected! Injecting recovery hint...")
+                # Check for repetition (e.g., 3 identical calls in a row)
+                if len(self._action_history) >= 3:
+                    recent = self._action_history[-3:]
+                    if all(a == current_action_tuple for a in recent):
+                        stuck_hint = (
+                            f"SYSTEM WARNING: You have performed action '{step.action}' with the same inputs "
+                            "3 times in a row. You are likely STUCK. Do NOT repeat this again. "
+                            "Try a different tool, check for missing configuration files, or verify "
+                            "if your assumptions about the environment are correct."
+                        )
+                        print(f"  ⚠️  Loop detected! Injecting recovery hint...")
             
-            if step.action == "finish":
-                # Phase 69: Transcript Audit (Optimized)
-                # Decision: Skip audit for trivial tasks (<= 2 steps) to reduce latency
-                if len(self._history) <= 2:
-                    print(f"  🏁 Task complete (Trivial task - skipping audit)")
-                    return True
+                if step.action == "finish":
+                    # Phase 69: Transcript Audit (Optimized)
+                    # Decision: Skip audit for trivial tasks (<= 2 steps) to reduce latency
+                    if len(self._history) <= 2:
+                        print(f"  🏁 Task complete (Trivial task - skipping audit)")
+                        return True
                 
-                from agent.verification.transcript_auditor import TranscriptAuditor
-                auditor = TranscriptAuditor(self._provider)
-                # If we don't have full_history, use the orchestrator's own history
-                messages_to_audit = self._full_history if self._full_history else [{"role": "user", "content": task}]
-                audit_res = auditor.audit(messages_to_audit, task_summary=step.thought)
+                    from agent.verification.transcript_auditor import TranscriptAuditor
+                    auditor = TranscriptAuditor(self._provider)
+                    # If we don't have full_history, use the orchestrator's own history
+                    messages_to_audit = self._full_history if self._full_history else [{"role": "user", "content": task}]
+                    audit_res = auditor.audit(messages_to_audit, task_summary=step.thought)
                 
-                if audit_res.get("pass"):
-                    print(f"  🏁 Task complete and AUDIT PASSED!")
-                    return True
-                else:
-                    violations = ", ".join(audit_res.get("violations", []))
-                    print(f"  ❌ AUDIT FAILED: {violations}")
-                    observation = f"AUDIT FAILED: The following constraints were violated: {violations}. Please fix them before finishing."
-                    step.observation = observation
-                    self._history.append(step)
-                    continue
+                    if audit_res.get("pass"):
+                        print(f"  🏁 Task complete and AUDIT PASSED!")
+                        return True
+                    else:
+                        violations = ", ".join(audit_res.get("violations", []))
+                        print(f"  ❌ AUDIT FAILED: {violations}")
+                        observation = f"AUDIT FAILED: The following constraints were violated: {violations}. Please fix them before finishing."
+                        step.observation = observation
+                        self._history.append(step)
+                        continue
                 
-            # 2. Execute Action & Observe
-            observation = self._execute_action(step.action, step.action_input)
-            step.observation = observation
+                # 2. Execute Action & Observe
+                observation = self._execute_action(step.action, step.action_input)
+                step.observation = observation
             
-            print(f"  👁️  Observation: {observation[:200]}..." if len(observation) > 200 else f"  👁️  Observation: {observation}")
+                print(f"  👁️  Observation: {observation[:200]}..." if len(observation) > 200 else f"  👁️  Observation: {observation}")
             
-            # 3. Record History
-            self._history.append(step)
+                # 3. Record History
+                self._history.append(step)
             
-            # Phase 87: Dynamic Budget Scaling (Progress Detection)
-            # If we are at the last turn but seem to be making progress, extend.
-            progress_detected = self._detect_progress(step.observation)
-            if step_num == self._max_steps and self._extensions_made < self._max_extensions:
-                if progress_detected:
-                    extension = 5
-                    self._max_steps += extension
-                    self._extensions_made += 1
-                    print(f"  📈 Progress detected! Dynamically extending budget by {extension} turns ({self._max_steps} total).")
-                    self._executor.readable_logger.log_thought(f"Dynamic Budget Scaling triggered: Extended by {extension} turns due to progress.")
+                # Phase 87: Dynamic Budget Scaling (Progress Detection)
+                # If we are at the last turn but seem to be making progress, extend.
+                progress_detected = self._detect_progress(step.observation)
+                if step_num == self._max_steps and self._extensions_made < self._max_extensions:
+                    if progress_detected:
+                        extension = 5
+                        self._max_steps += extension
+                        self._extensions_made += 1
+                        print(f"  📈 Progress detected! Dynamically extending budget by {extension} turns ({self._max_steps} total).")
+                        self._executor.readable_logger.log_thought(f"Dynamic Budget Scaling triggered: Extended by {extension} turns due to progress.")
             
-            # Phase 86: Hard-Wall Timeout Enforcement
-            if remaining_seconds <= 0:
-                print(f"  🛑 Hard timeout reached ({self._total_timeout}s). Terminating mission.")
-                break
+                    if remaining_seconds <= 0:
+                        print(f"  🛑 Hard timeout reached ({self._total_timeout}s). Terminating mission.")
+                        break
+                
+            print(f"  ⚠️  Max steps ({self._max_steps}) or timeout reached without completion.")
+            self._print_failure_summary(task, "Max steps or timeout reached")
+            return False
             
-        print(f"  ⚠️  Max steps ({self._max_steps}) or timeout reached without completion.")
-        self._print_failure_summary(task, "Max steps or timeout reached")
-        return False
+        except KeyboardInterrupt:
+            print("\n  🛑 User aborted run (KeyboardInterrupt). Generating final summary before exiting...")
+            self._print_failure_summary(task, "User aborted via KeyboardInterrupt")
+            raise
+        except Exception as e:
+            logger.error(f"Agent crashed with exception: {e}", exc_info=True)
+            self._print_failure_summary(task, f"Agent crashed: {e}")
+            return False
 
     def _print_failure_summary(self, task: str, reason: str):
         """Generates a final summary of what was discovered if the agent fails or times out."""
