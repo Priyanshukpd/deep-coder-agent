@@ -63,7 +63,7 @@ _PATTERNS: list[tuple[re.Pattern, CommandTier]] = [
     (re.compile(r"\b(ls|find|tree|du|df)\b"), CommandTier.SAFE),
     (re.compile(r"\b(grep|rg|ag|ack|sed\s+-n)\b"), CommandTier.SAFE),
     (re.compile(r"\b(echo|printf|true|false|test)\b"), CommandTier.SAFE),
-    (re.compile(r"\b(pwd|whoami|uname|date|env|printenv)\b"), CommandTier.SAFE),
+    (re.compile(r"\b(pwd|whoami|id|hostname|uname|date|env|printenv)\b"), CommandTier.SAFE),
     (re.compile(r"\b(git\s+(status|log|diff|show|branch|stash\s+list))"), CommandTier.SAFE),
     (re.compile(r"\b(git\s+(add|commit|stash\s+(save|push|pop)))"), CommandTier.SAFE),
     (re.compile(r"\b(npm\s+(test|run|start|build)|npx)\b"), CommandTier.SAFE),

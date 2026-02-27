@@ -1,7 +1,7 @@
 """
 Sandbox Permission Modes — Control what God Mode Agent is allowed to do.
 
-Three modes (matching Codex terminology):
+Three permission modes:
     read-only       → model can read files but NOT write or run commands
     workspace-write → can write within project dir only, no arbitrary shell commands
     full-access     → current God Mode behavior (default)

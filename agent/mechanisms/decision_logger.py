@@ -37,23 +37,33 @@ class DecisionLogger:
     Also handles standard lib logging for console output.
     """
 
-    def __init__(self, log_dir: str = "logs", session_id: str = "session"):
+    def __init__(self, log_dir: str = ".agent_log", session_id: str = "session"):
         self.session_id = session_id
         self.log_dir = Path(log_dir)
-        self.log_dir.mkdir(parents=True, exist_ok=True)
-        
+        try:
+            self.log_dir.mkdir(parents=True, exist_ok=True)
+        except PermissionError:
+            # Fallback to tmp if local dir is locked
+            self.log_dir = Path("/tmp/godmode") / log_dir
+            self.log_dir.mkdir(parents=True, exist_ok=True)
+            
         # JSON lines log file
         timestamp = int(time.time())
         self.log_file = self.log_dir / f"decision_log_{session_id}_{timestamp}.jsonl"
         
         # Configure standard logging for console/debug
+        handlers = [logging.StreamHandler()]
+        try:
+            handlers.append(logging.FileHandler(self.log_dir / "agent_debug.log"))
+        except (PermissionError, OSError):
+            # If we can't write to file, just log to console
+            pass
+
         logging.basicConfig(
             level=logging.INFO,
             format="%(asctime)s [%(levelname)s] %(message)s",
-            handlers=[
-                logging.StreamHandler(),
-                logging.FileHandler(self.log_dir / "agent_debug.log"),
-            ],
+            handlers=handlers,
+            force=True  # Ensure we override any existing config
         )
         self.logger = logging.getLogger("DecisionLogger")
 

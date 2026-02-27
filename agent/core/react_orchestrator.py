@@ -6,6 +6,7 @@ Decouples high-level reasoning from low-level tool execution.
 import logging
 import json
 import os
+import time
 from dataclasses import dataclass, field
 from typing import List, Dict, Any, Optional
 
@@ -35,21 +36,40 @@ class ReActOrchestrator:
         self._provider = provider
         self._executor = executor
         self._history: List[ReActStep] = []
-        self._max_steps = 15
+        self._max_steps = getattr(executor, "max_turns", 15)
 
     def orchestrate(self, task: str, intent: str, full_history: list = None) -> bool:
         """
         Run the ReAct loop until 'finish' or max steps reached.
         """
         self._history = []
+        self._action_history = []  # Track (action, action_input) for loop detection
         self._full_history = full_history or []
+        self._start_time = time.time()
+        self._total_timeout = getattr(self._executor, "total_timeout", 300)
+        self._extensions_made = 0
+        self._max_extensions = 2
+        
         print(f"\n🚀 Starting autonomous ReAct loop for task: {task[:100]}...")
         
+        stuck_hint = ""
         for step_num in range(1, self._max_steps + 1):
-            print(f"\n🧠 Turn {step_num}/{self._max_steps}")
+            remaining_turns = self._max_steps - step_num + 1
+            elapsed_time = time.time() - self._start_time
+            remaining_seconds = max(0, int(self._total_timeout - elapsed_time))
+            
+            print(f"\n🧠 Turn {step_num}/{self._max_steps} | ⏳ {remaining_seconds}s remaining")
             
             # 1. Think & Act
-            thought_action = self._decide_next_step(task, intent)
+            thought_action = self._decide_next_step(
+                task, 
+                intent, 
+                stuck_hint=stuck_hint,
+                remaining_turns=remaining_turns,
+                remaining_seconds=remaining_seconds
+            )
+            stuck_hint = "" # Reset hint after use
+            
             if not thought_action:
                 logger.error("Failed to decide next step.")
                 return False
@@ -62,6 +82,26 @@ class ReActOrchestrator:
             
             print(f"  🤔 Thought: {step.thought}")
             print(f"  🛠️  Action: {step.action}({json.dumps(step.action_input)})")
+            
+            # Phase 82: Persistent Logging for ReAct turns
+            self._executor.readable_logger.log_thought(step.thought)
+            self._executor.readable_logger.log_action(step.action, json.dumps(step.action_input))
+
+            # Phase 83: Loop Detection
+            current_action_tuple = (step.action, json.dumps(step.action_input, sort_keys=True))
+            self._action_history.append(current_action_tuple)
+            
+            # Check for repetition (e.g., 3 identical calls in a row)
+            if len(self._action_history) >= 3:
+                recent = self._action_history[-3:]
+                if all(a == current_action_tuple for a in recent):
+                    stuck_hint = (
+                        f"SYSTEM WARNING: You have performed action '{step.action}' with the same inputs "
+                        "3 times in a row. You are likely STUCK. Do NOT repeat this again. "
+                        "Try a different tool, check for missing configuration files, or verify "
+                        "if your assumptions about the environment are correct."
+                    )
+                    print(f"  ⚠️  Loop detected! Injecting recovery hint...")
             
             if step.action == "finish":
                 # Phase 69: Transcript Audit (Optimized)
@@ -96,14 +136,41 @@ class ReActOrchestrator:
             # 3. Record History
             self._history.append(step)
             
-        print(f"  ⚠️  Max steps ({self._max_steps}) reached without completion.")
+            # Phase 87: Dynamic Budget Scaling (Progress Detection)
+            # If we are at the last turn but seem to be making progress, extend.
+            progress_detected = self._detect_progress(step.observation)
+            if step_num == self._max_steps and self._extensions_made < self._max_extensions:
+                if progress_detected:
+                    extension = 5
+                    self._max_steps += extension
+                    self._extensions_made += 1
+                    print(f"  📈 Progress detected! Dynamically extending budget by {extension} turns ({self._max_steps} total).")
+                    self._executor.readable_logger.log_thought(f"Dynamic Budget Scaling triggered: Extended by {extension} turns due to progress.")
+            
+            # Phase 86: Hard-Wall Timeout Enforcement
+            if remaining_seconds <= 0:
+                print(f"  🛑 Hard timeout reached ({self._total_timeout}s). Terminating mission.")
+                break
+            
+        print(f"  ⚠️  Max steps ({self._max_steps}) or timeout reached without completion.")
         return False
 
-    def _decide_next_step(self, task: str, intent: str) -> Optional[Dict[str, Any]]:
+    def _decide_next_step(self, task: str, intent: str, stuck_hint: str = "", remaining_turns: int = 15, remaining_seconds: int = 300) -> Optional[Dict[str, Any]]:
         """Ask the LLM for the next thought and action."""
         system_prompt = self._build_system_prompt(intent)
-        user_content = f"Task: {task}\n\n"
         
+        # Phase 85/86: Resource Budget Header
+        budget_header = f"BUDGET: {remaining_turns} turns remaining | {remaining_seconds}s time remaining.\n"
+        if remaining_turns <= 5:
+            budget_header += "!!! WARNING: You are nearly out of turns. Deliver your final result or a high-fidelity summary NOW. !!!\n"
+        if remaining_seconds < 60:
+             budget_header += "!!! WARNING: You are nearly out of time. Complete your task immediately. !!!\n"
+
+        user_content = budget_header + f"\nTask: {task}\n\n"
+        
+        if stuck_hint:
+            user_content += f"!!! {stuck_hint} !!!\n\n"
+            
         if self._history:
             user_content += "History of steps:\n"
             for i, h in enumerate(self._history, 1):
@@ -123,6 +190,28 @@ class ReActOrchestrator:
         except Exception as e:
             logger.error(f"Error in decide_next_step: {e}")
             return None
+
+    def _detect_progress(self, observation: str) -> bool:
+        """Heuristic to detect if the last action was productive."""
+        # Signals of progress:
+        # 1. Success exit codes
+        # 2. Key success keywords
+        # 3. File modifications
+        success_signals = [
+            "Exit Code: 0",
+            "Successfully patched",
+            "Successfully wrote",
+            "audit passed",
+            "test passed",
+            "PASSED"
+        ]
+        
+        if any(signal in observation for signal in success_signals):
+            return True
+            
+        # Also check if error log is shrinking (heuristic)
+        # For now, stick to explicit success signals to avoid infinite loops on "changing" but not "fixing"
+        return False
 
     def _execute_action(self, action: str, action_input: Dict[str, Any]) -> str:
         """Delegates the action to the TaskExecutor."""
@@ -175,14 +264,43 @@ class ReActOrchestrator:
             elif action == "spawn_subagent":
                 persona = action_input.get("persona")
                 sub_task = action_input.get("task")
-                print(f"  🤖 Spawning {persona} for task: {sub_task}...")
+                print(f"  🤖 Spawning Subagent '{persona}' for task:\n     {sub_task}...")
                 
-                # In PM mode, we can recursive call execute or a simplified specialist loop
-                # For now, we'll perform the specialist mission using the TaskExecutor's logic
-                # but with the specific persona-based system prompt.
-                res = self._executor.execute(sub_task, intent=persona.lower())
-                return f"Subagent {persona} finished. Result: {res.summary}. Success: {res.is_complete}"
+                from agent.planning.subagent_manager import SubagentManager
+                manager = SubagentManager(self._executor._repo_path)
+                agent = manager.get_agent(persona)
                 
+                # Spawn a nested orchestrator for the subagent
+                sub_orchestrator = ReActOrchestrator(self._provider, self._executor)
+                if agent:
+                    sub_orchestrator._custom_agent = agent
+                    if agent.max_turns:
+                        sub_orchestrator._max_steps = agent.max_turns
+                        
+                success = sub_orchestrator.orchestrate(sub_task, intent=persona.lower())
+                status = "Success" if success else "Failed/Timeout"
+                return f"Subagent {persona} finished. Status: {status}."
+
+            elif action == "memory_store":
+                key = action_input.get("key", "").strip()
+                val = action_input.get("value", "")
+                if not hasattr(self._executor, "_ephemeral_memory"):
+                    self._executor._ephemeral_memory = {}
+                self._executor._ephemeral_memory[key] = val
+                return f"Stored '{key}' in memory."
+
+            elif action == "memory_retrieve":
+                key = action_input.get("key", "").strip()
+                mem = getattr(self._executor, "_ephemeral_memory", {})
+                return f"Memory for '{key}': {mem.get(key, 'Not found')}"
+
+            elif action == "todo_add":
+                task = action_input.get("task", "")
+                if not hasattr(self._executor, "_ephemeral_todos"):
+                    self._executor._ephemeral_todos = []
+                self._executor._ephemeral_todos.append(task)
+                return f"Added TODO: {task}. Total TODOs: {len(self._executor._ephemeral_todos)}"
+
             else:
                 return f"Error: Unknown action {action}"
         except Exception as e:
@@ -194,31 +312,40 @@ class ReActOrchestrator:
         from agent.core.skill_registry import skill_registry
         
         file_list = []
-        if self._executor._knowledge_graph:
+        if getattr(self._executor, "_knowledge_graph", None):
             file_list = self._executor._knowledge_graph.get_all_files()
             
         hydrated_docs = skill_registry.get_hydrated_docs(file_list)
+        
+        custom_instructions = ""
+        if hasattr(self, "_custom_agent") and self._custom_agent:
+            custom_instructions = f"\n### Custom Subagent Instructions ({self._custom_agent.name}):\n{self._custom_agent.system_prompt}\n"
         
         return f"""You are a ReAct-based autonomous software engineer. 
 Your goal is to complete the user's task by reasoning and taking steps.
 
 Current Intent Context: {intent}
-
+{custom_instructions}
 Available Tools:
 - search_code(query): Search the codebase for symbols or text.
 - ls(path): List files in a directory.
 - read_file(path): Read the full content of a file.
 - write_file(path, content, description): Create or update a file.
 - run_command(command): Execute a shell command in the project root.
-- spawn_subagent(persona, task): Delegate a sub-task to a specialist (e.g. Explorer, Architect, Implementer, Verifier).
+- spawn_subagent(persona, task): Delegate a sub-task to a specialist.
+- memory_store(key, value): Save context to your long-term memory.
+- memory_retrieve(key): Retrieve context from long-term memory.
+- todo_add(task): Add an explicit task to your internal checklist.
 - finish(): Call this when you have verified your work and the task is complete.
 
 Guidelines:
 1. Always state your Thought before choosing an Action.
 2. Use observations from previous steps to inform your next decision.
-3. If a command fails, analyze the error and try a different approach.
-4. If you need more information, use search_code or read_file.
-5. Be surgical. Only modify what is necessary.
+3. If a command fails, analyze the error. If it's a 'Permission Denied' or 'Missing File', check your environment (id, hostname) and look for config files (.ini, .cfg, .toml).
+4. If you repeat an action twice with the same result, STOP. Try a different approach or verify the file exists first.
+7. Strategic Debugging: If tests fail because of missing data or uninitialized state, verify your data hydration strategy (e.g., eager vs lazy loading) and ensure all dependencies are resolved before use.
+8. Architectural Resilience: If you encounter circular dependency or "partially initialized" errors, analyze the import/dependency graph. Move shared definitions to a "Base" or "Common" module to break the loop.
+9. Environment Knowledge: If a tool fails with unexpected errors, use discovery tools (`ls`, `run_command('id')`, `search_code`) to map the environment before making assumptions.
 
 Response Format:
 You must call the 'decide_step' function with your thought, action, and action_input.
@@ -240,7 +367,7 @@ REACT_STEP_TOOL = {
                 },
                 "action": {
                     "type": "string",
-                    "enum": ["search_code", "ls", "read_file", "write_file", "run_command", "spawn_subagent", "finish"],
+                    "enum": ["search_code", "ls", "read_file", "write_file", "run_command", "spawn_subagent", "memory_store", "memory_retrieve", "todo_add", "finish"],
                     "description": "The action to take."
                 },
                 "action_input": {

@@ -1,6 +1,5 @@
 """
 Rule Engine — Deterministic, sub-millisecond command safety.
-Inspired by Claude Code's rule_engine.py.
 """
 
 import re
@@ -59,8 +58,9 @@ class RuleEngine:
             (re.compile(r"\bgit\s+(reset|push\s+.*--force|clean|rebase|filter-branch)"), RuleTier.GIT_REWRITE),
             (re.compile(r"\b(rm\s|rmdir|shred|truncate|dd\s)"), RuleTier.DESTRUCTIVE),
             (re.compile(r"\b(curl|wget|npm\s+install|pip\s+install|yarn\s+add|apt|brew|docker\s+(pull|push))"), RuleTier.NETWORK),
-            (re.compile(r"\b(cat|ls|grep|rg|git\s+(status|log|diff|add|commit|branch))\b"), RuleTier.SAFE),
-            (re.compile(r"\b(npm\s+(test|run|start|build)|pytest|jest|python|node|go|cargo|make)\b"), RuleTier.SAFE),
+            (re.compile(r"\b(cat|ls|grep|rg|git\s+(status|log|diff|add|commit|branch|init|config|checkout))\b"), RuleTier.SAFE),
+            (re.compile(r"\b(mkdir|touch|cp|pwd|whoami|id|hostname|uname|date|env|printenv)\b"), RuleTier.SAFE),
+            (re.compile(r"\b(npm\s+(test|run|start|build)|pytest|jest|python|node|go|cargo|make|pip)\b"), RuleTier.SAFE),
         ]
 
     def check(self, command: str, repo_path: str = None) -> RuleResult:

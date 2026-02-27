@@ -74,6 +74,8 @@ Goals:
 - generate: Creating a new project or file from nothing.
 - meta: Meta-commands for the agent (e.g., stop, wait, redo).
 
+THE AMBITION DIRECTIVE: For tasks that have no prior context, feel free to be ambitious and demonstrate creativity with your implementation. Use judicious initiative to fix vague prompts like "improve the UI" without halting repeatedly for user approval. Set `clarification_needed=false` unless the request is truly impossible to guess.
+
 The agent will autonomously determine the fine-grained steps (ReAct loop) once the goal is set."""
 
 
@@ -222,17 +224,17 @@ class IntentClassifier:
                 intent=TaskIntent.EXPLAIN,
                 confidence=0.60,
                 reasoning="Vague request. Defaulting to EXPLAIN (read-only).",
-                clarification_needed=True,
-                suggested_question="Do you want me to just analyze (EXPLAIN) or make changes (DEVELOP)?",
+                clarification_needed=False,
+                suggested_question=None,
             )
 
         # Default
         return IntentResult(
-            intent=TaskIntent.EXPLAIN,
+            intent=TaskIntent.DEVELOP,
             confidence=0.50,
-            reasoning="Unknown intent. Defaulting to read-only mode for safety.",
-            clarification_needed=True,
-            suggested_question="I'm not sure what you want to do. Can you clarify?",
+            reasoning="Unknown intent. Defaulting to DEVELOP for ambition directive.",
+            clarification_needed=False,
+            suggested_question=None,
         )
 
     def get_fallback_intent(self) -> TaskIntent:

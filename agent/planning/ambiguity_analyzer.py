@@ -1,6 +1,5 @@
 """
 Ambiguity Analyzer — Proactively identify underspecified tasks.
-Inspired by Claude Code's clarification phase.
 """
 
 import json
@@ -46,11 +45,12 @@ class AmbiguityAnalyzer:
     def __init__(self, provider):
         self._provider = provider
 
-    def analyze(self, task: str, repo_context: str) -> AmbiguityResult:
+    def analyze(self, task: str, repo_context: str, feedback: List[str] = None) -> AmbiguityResult:
         """
         Analyze the task and return questions if needed.
         """
-        prompt = f"Task: {task}\n\nRepository Context:\n{repo_context}"
+        feedback_str = "\n".join([f"- {f}" for f in feedback]) if feedback else "None"
+        prompt = f"Task: {task}\n\nFeedback/Instructions received:\n{feedback_str}\n\nRepository Context:\n{repo_context}"
         
         messages = [
             {"role": "system", "content": AMBIGUITY_SYSTEM_PROMPT},

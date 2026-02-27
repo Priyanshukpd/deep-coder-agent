@@ -5,7 +5,7 @@ Walks from the current working directory up to the repo root (or filesystem root
 collecting all AGENTS.md files. Deeper files (closer to CWD) take priority and
 their instructions are appended after shallower ones (so deeper = more specific override).
 
-This mirrors how Codex automatically loads AGENTS.md on every task.
+This handles hierarchical AGENTS.md loading on every task.
 """
 from __future__ import annotations
 

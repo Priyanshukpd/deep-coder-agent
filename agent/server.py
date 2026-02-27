@@ -151,18 +151,12 @@ async def chat(request: ChatRequest):
                 }
 
                 if response.mode == "ACTION" and response.action:
-                     # This handle standard code actions (generate/fix/modify)
-                     # Internal 'research' actions are already handled and synthesized inside _send_agentic
+                     # Internal 'research' and standard actions are already fully handled and synthesized inside _send_agentic
                      result["action"] = {
                          "type": response.action.type,
                          "task": response.action.task
                      }
-                     # We might need to run the action again if it wasn't a research action handled internally
-                     # Note: _send_agentic only loops for 'research', others return immediately
-                     if response.action.type != "research":
-                         exec_result = session._execute_action(response.action)
-                         result["execution_result"] = exec_result
-
+                     
                 session.save_session()
                 return result
             finally:

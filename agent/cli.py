@@ -3,6 +3,7 @@ God Mode Agent — CLI Runner.
 
 Usage:
     god-mode start                      Launch the God Mode local daemon and Web UI
+    god-mode chat                       Launch the interactive terminal chat (REPL)
     python -m agent "Fix the bug"       Run directly against a task
     python -m agent --repo /path "Add dark mode"
     python -m agent --dry-run "Refactor"
@@ -23,6 +24,7 @@ import subprocess
 import shutil
 import time
 from datetime import datetime
+from typing import Optional
 
 VERSION = "7.5.1.1"
 
@@ -56,9 +58,16 @@ class ExecutionLog:
         })
 
     def save(self):
-        """Save log to .agent_log/ in the target repo."""
+        """Save log to .agent_log/ in the target repo, with fallback."""
         log_dir = os.path.join(self._repo_path, ".agent_log")
-        os.makedirs(log_dir, exist_ok=True)
+        try:
+            os.makedirs(log_dir, exist_ok=True)
+        except (PermissionError, OSError):
+            # Fallback to tmp
+            import tempfile
+            log_dir = os.path.join(tempfile.gettempdir(), "god-mode-agent", os.path.basename(self._repo_path), ".agent_log")
+            os.makedirs(log_dir, exist_ok=True)
+
         filename = f"run_{self._start.strftime('%Y%m%d_%H%M%S')}.json"
         filepath = os.path.join(log_dir, filename)
         data = {
@@ -68,9 +77,12 @@ class ExecutionLog:
             "finished": datetime.now().isoformat(),
             "steps": self._entries,
         }
-        with open(filepath, 'w') as f:
-            json.dump(data, f, indent=2)
-        print(f"  📝 Log saved: {filepath}")
+        try:
+            with open(filepath, 'w') as f:
+                json.dump(data, f, indent=2)
+            print(f"  📝 Log saved: {filepath}")
+        except Exception as e:
+            print(f"  ⚠️  Failed to save execution log: {e}")
 
 
 # ── Rollback Manager ────────────────────────────────────────────
@@ -278,7 +290,7 @@ def run_full_pipeline(task: str, repo_path: str = ".", dry_run: bool = False,
     # Initialize Sandbox
     from agent.core.sandbox import Sandbox
     mode_str = sandbox_mode or os.environ.get("AGENT_SANDBOX", "full-access")
-    sandbox = Sandbox(repo_path, mode=mode_str)
+    sandbox = Sandbox.from_string(mode_str, repo_path=repo_path)
 
     exec_log = ExecutionLog(repo_path)
 
@@ -369,8 +381,10 @@ def run_full_pipeline(task: str, repo_path: str = ".", dry_run: bool = False,
     
     provider = create_provider(config)
     executor = TaskExecutor(provider, repo_path)
-    sandbox = Sandbox(sandbox_mode)
-    executor.set_sandbox(sandbox)
+    
+    # Use the same mode evaluated at the start of the function
+    sandbox_mode_eval = sandbox_mode or os.environ.get("AGENT_SANDBOX", "full-access")
+    sandbox = Sandbox.from_string(sandbox_mode_eval, repo_path=repo_path)
 
     def _display_plan(plan):
         if plan.is_ambiguous:
@@ -409,6 +423,13 @@ def run_full_pipeline(task: str, repo_path: str = ".", dry_run: bool = False,
         
         # Phase 59: Handle ambiguity in interactive loop
         while plan.is_ambiguous:
+            if yes:
+                print("\n⚠️  Ambiguous task detected. Proceeding with best guess due to --yes mode.")
+                executor.add_feedback(f"Proceed with your best guess: {plan.best_guess_scenario}")
+                # Re-run execute with feedback
+                plan = executor.execute(task, intent=intent_str)
+                continue
+
             _display_plan(plan)
             print("\n🗣️ Please clarify or type 'yes' to proceed with my best guess.")
             try:
@@ -574,69 +595,19 @@ def run_interactive_legacy(repo_path: str = "."):
 
 
 def run_web_ui(repo_path: str = "."):
-    """Launch the Streamlit Web UI."""
-    import sys
-    import subprocess
-    
-    # Path to the web_ui.py module
-    web_ui_path = os.path.join(os.path.dirname(__file__), "web_ui.py")
-    
-    cmd = [
-        sys.executable, "-m", "streamlit", "run",
-        web_ui_path,
-        "--",
-        "--repo", repo_path
-    ]
-    
-    print(f"🚀 Launching Web UI for repo: {os.path.abspath(repo_path)}")
-    print(f"   Command: {' '.join(cmd)}")
-    
-    try:
-        subprocess.run(cmd, check=True)
-    except KeyboardInterrupt:
-        print("\n👋 Web UI stopped.")
+    """Deprecated: The Streamlit Web UI has been retired."""
+    print("⚠️  The legacy Streamlit Web UI has been deprecated in favor of the Rich Terminal UI.")
+    print("   Please use: god-mode chat")
 
 def run_start():
     """Start the God Mode background server and open the browser."""
-    import uvicorn
-    import threading
-    import webbrowser
-    import time
-    
     print(f"\n🚀 Starting God Mode Daemon v{VERSION}...")
+    print("⚠️  The heavy FastAPI + React Web UI is deprecated in Phase 76.")
+    print("   Pivoting to Rich Terminal Interface.")
+    print("   Launching interactive REPL instead...\n")
     
-    # We will run the FastAPI server from agent.server
-    def run_server():
-        try:
-            uvicorn.run("agent.server:app", host="0.0.0.0", port=8000, log_level="warning")
-        except Exception as e:
-            print(f"Server error: {e}")
-            
-    server_thread = threading.Thread(target=run_server, daemon=True)
-    print("  🟢 Starting API backend (port 8000)...")
-    server_thread.start()
-    
-    # Wait for server to come up
-    time.sleep(2)
-    
-    react_url = "http://localhost:5173"
-    print(f"\n  🌐 God Mode Premium React UI: {react_url}")
-    print("     (Ensure 'npm run dev' is running in the /ui folder)")
-    
-    try:
-        print(f"  🚀 Launching browser to {react_url}...")
-        webbrowser.open(react_url)
-    except Exception as e:
-        print(f"  ⚠️  Could not automatically open browser: {e}")
-    
-    print("\n  💡 To use the legacy Streamlit UI, run: python -m agent --ui")
-    
-    # Stay alive while server thread is running
-    try:
-        while server_thread.is_alive():
-            time.sleep(1)
-    except KeyboardInterrupt:
-        print("\n👋 God Mode stopped.")
+    # Launch chat instead of server
+    run_chat()
 
 # ── Entry Point ──────────────────────────────────────────────────
 
@@ -653,6 +624,9 @@ def main():
     
     # Start command
     start_parser = subparsers.add_parser("start", help="Start the God Mode server and UI")
+    
+    # Chat command
+    chat_parser = subparsers.add_parser("chat", help="Launch the interactive terminal chat (REPL)")
     
     # Run command (explicit passing of task)
     run_parser = subparsers.add_parser("run", help="Run a specific task")
@@ -701,7 +675,7 @@ def main():
     )
     parser.add_argument(
         "--ui", action="store_true",
-        help="Launch Streamlit Web UI",
+        help=argparse.SUPPRESS, # Deprecated
     )
     parser.add_argument(
         "--legacy-repl", action="store_true",
@@ -751,8 +725,9 @@ def main():
         if sid:
             run_chat(repo_path=args.repo, session_id=sid, provider_name=args.provider, model_name=args.model)
         sys.exit(0)
-    elif args.interactive:
+    elif args.command == "chat" or args.interactive:
         run_chat(repo_path=args.repo, provider_name=args.provider, model_name=args.model)
+        sys.exit(0)
     elif args.ui:
         run_web_ui(repo_path=args.repo)
     elif args.legacy_repl:

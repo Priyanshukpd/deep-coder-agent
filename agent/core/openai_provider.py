@@ -5,7 +5,7 @@ Compatible with: OpenAI, OpenRouter, Ollama, vLLM, LM Studio, and any
 OpenAI-compatible endpoint.
 
 New in this version:
-  - Real-time token streaming to terminal (Codex-style OutputTextDelta)
+  - Real-time token streaming to terminal (Streaming OutputTextDelta)
   - Reasoning/thinking token display (🧠 dimmed block before answer)
   - reasoning_effort parameter for o1/o3/DeepSeek-R1/Apriel-Thinker
   - reasoning_tokens separate tracking in usage stats
@@ -169,6 +169,42 @@ class OpenAIProvider:
 
         result = self._parse_response(response, cfg)
         if not result.has_tool_calls:
+            # Fallback for models that output the tool call as plain text JSON
+            if result.content:
+                try:
+                    content = result.content.strip()
+                    if content.startswith("```json"):
+                        content = content[7:-3].strip()
+                    elif content.startswith("```"):
+                        content = content[3:-3].strip()
+                    
+                    # Sometimes the reasoning block is included in content,
+                    # we should try to extract the JSON part.
+                    if content.startswith("[") or content.startswith("{"):
+                        parsed = json.loads(content)
+                        
+                        # Case 1: Array of tool calls
+                        if isinstance(parsed, list) and len(parsed) > 0:
+                            tc = parsed[0]
+                            name = tc.get("name")
+                            args = tc.get("parameters") or tc.get("arguments", {})
+                            if isinstance(args, str):
+                                args = json.loads(args)
+                            if name:
+                                return ToolCallResult(function_name=name, arguments=args)
+                                
+                        # Case 2: Single tool call object
+                        elif isinstance(parsed, dict):
+                            name = parsed.get("name")
+                            args = parsed.get("parameters") or parsed.get("arguments", {})
+                            if isinstance(args, str):
+                                args = json.loads(args)
+                            if name:
+                                return ToolCallResult(function_name=name, arguments=args)
+                except Exception as parse_e:
+                    logger.warning(f"Failed fallback JSON parse of text response: {parse_e}")
+                    pass # Fall through to the error raise below
+
             raise LLMToolCallError(
                 f"Expected tool call but got text: {result.content[:200] if result.content else '(empty)'}"
             )
@@ -176,7 +212,7 @@ class OpenAIProvider:
 
     def _stream_to_terminal(self, stream_response: Any, cfg: LLMConfig) -> CompletionResult:
         """
-        Stream tokens to terminal live (Codex OutputTextDelta style).
+        Stream tokens to terminal live (Streaming OutputTextDelta style).
 
         Features:
           - Print reasoning_content deltas as dim/italic 🧠 Thinking... block

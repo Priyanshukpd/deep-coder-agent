@@ -233,6 +233,26 @@ class TogetherProvider:
         )
 
         if not result.has_tool_calls:
+            # Phase 75: Heuristic fallback for non-native tool calling models
+            if result.content:
+                import re
+                # Try to extract JSON from common markdown blocks or raw text
+                json_match = re.search(r"```json\s*(\{.*?\})\s*```", result.content, re.DOTALL) or \
+                             re.search(r"(\{.*?\})", result.content, re.DOTALL)
+                
+                if json_match:
+                    try:
+                        args = json.loads(json_match.group(1))
+                        # If it looks like a tool call, wrap it
+                        if "thought" in args and "action" in args:
+                            return ToolCallResult(
+                                function_name="decide_step",
+                                arguments=args,
+                                raw_response=result.content
+                            )
+                    except json.JSONDecodeError:
+                        pass
+
             raise LLMToolCallError(
                 f"Expected a tool call but got text response: "
                 f"{result.content[:200] if result.content else '(empty)'}"

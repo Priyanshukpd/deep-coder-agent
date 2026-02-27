@@ -18,12 +18,34 @@ import logging
 import time
 from datetime import datetime
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Optional, Any
+
+from rich.console import Console
+from rich.markdown import Markdown
+from rich.panel import Panel
+from rich.prompt import Prompt, Confirm
+from rich.status import Status
+from rich.spinner import Spinner
+from rich.syntax import Syntax
+from rich.theme import Theme
+
+# Define a custom premium theme matching the God Mode aesthetic
+custom_theme = Theme({
+    "info": "dim cyan",
+    "warning": "magenta",
+    "danger": "bold red",
+    "success": "bold green",
+    "user": "bold cyan",
+    "agent": "bold bright_green",
+    "system": "dim white"
+})
+console = Console(theme=custom_theme)
 
 from agent.planning.agents_loader import inject_agents_md
 from agent.core.context_manager import trim_history, estimate_tokens, estimate_message_tokens
 from agent.core.session_store import save_message, save_session_meta, session_path
 from agent.planning.session_state_manager import SessionStateManager
+from agent.core.logger import HumanReadableLogger
 
 logger = logging.getLogger(__name__)
 
@@ -40,20 +62,27 @@ IMPORTANT: You must decide how to respond to each user message. Respond with a J
   "mode": "CHAT" or "ACTION",
   "message": "Your conversational response to the user",
   "action": null or {
-    "type": "generate" | "fix" | "modify" | "run" | "research" | "cd",
+    "type": "generate" | "fix" | "modify" | "run" | "research" | "cd" | "shell",
     "task": "Clear task description for the executor",
-    "run_command": "optional shell command to run or path to cd into"
+    "run_command": "optional shell command to run, or path to cd into"
   }
 }
 
+CRITICAL SCHEMA ENFORCEMENT: 
+You MUST NOT hallucinate any properties outside of `type`, `task`, and `run_command` inside the `action` object. Specifically, NEVER output a `files` array here. Use `shell` with a command like `cat file.py` or use `research` if you want to read files.
+NEVER, EVER use `<tool_call>` or XML tags. DO NOT output any `<` or `>` brackets. Output ONLY raw JSON starting with `{` and ending with `}`.
+
 Guidelines:
 - Use "CHAT" mode for simple questions, greetings, or quick confirmations AFTER you have gathered enough information.
-- Use "ACTION" with type "research" when the user asks for explanations, codebase structure, or deep logic analysis. 
-- PROACTIVE AGENTIC BEHAVIOR: If you are asked to "explain the code" or "how does X work", do NOT just answer from the file tree. You MUST trigger an "ACTION" of type "research" first. 
+- Use "ACTION" with type "shell" to gain raw, unfettered access to the bash terminal.
+- HEURISTIC EXPLORATION: When searching for text or files on vague prompts, ALWAYS prioritize using raw UNIX tools like `grep`, `rg` (ripgrep), `fd`, and `ls` through the `shell` action. Do not ask for tools like 'KnowledgeGraph'. Explore the filesystem just like a human engineer would.
+- THE AMBITION DIRECTIVE: For tasks that have no prior context, feel free to be ambitious and demonstrate creativity with your implementation. Use judicious initiative to fix vague prompts like "improve the UI" without halting repeatedly for user approval. Try to solve the problem directly.
+- Use "ACTION" with type "research" when the user asks for high-level explanations or codebase structure that the knowledge graph handles well. 
+- PROACTIVE AGENTIC BEHAVIOR: If you are asked to "explain the code" or "how does X work", do NOT just answer from the file tree. You MUST trigger an "ACTION" of type "shell" or "research" first. 
 - FLUID WORKSPACE: If the user asks to "create a new project" and you are in the wrong directory, DO NOT tell the user to change directories. Instead, trigger a "run" action to `mkdir` the new project, or output a "cd" action with the relative path to move there autonomously.
 - SMART CODING (LONG TASKS): If writing code that takes hours to run (e.g., ML training, large data processing), NEVER hardcode the long loop in the main block. Use structured functions or classes. Provide a way (e.g., via CLI args or a test flag) to verify the logic on a microscopic scale (1% of data/1 epoch) to prove the code works before the user runs the full job.
-- You will receive the research findings in the next turn. Use those findings to provide a detailed, accurate response in "CHAT" mode.
-- In ACTION mode, your "message" should say something like "I'll analyze the code to give you a detailed answer."
+- You will receive the output of your ACTIONs in the next turn automatically. Use those findings to provide a detailed, accurate response in "CHAT" mode or chain another "ACTION".
+- In ACTION mode, your "message" should say something like "I'll run some commands to give you a detailed answer."
 - Never promise to do something in CHAT mode that you aren't actually triggering an ACTION for.
 
 CRITICAL: Output ONLY the JSON block. No markdown fences, no extra text.
@@ -126,6 +155,7 @@ class ChatSession:
         save_session_meta(self._session_id, self._repo_path, getattr(self._provider.config.llm, "model", "default"))
 
         self.state_manager = SessionStateManager(self._repo_path, self._provider)
+        self.readable_logger = HumanReadableLogger(self._repo_path)
 
 
 
@@ -214,13 +244,56 @@ class ChatSession:
         return msgs
 
     def _parse_response(self, raw: str) -> ChatResponse:
-        """Parse the LLM's JSON response."""
+        """Parse the LLM's JSON response robustly."""
+        import re
         text = raw.strip()
+        
+        # 1. Handle hallucinated XML tool calls from coding models
+        xml_match = re.search(r'<tool_call>.*?</tool_call>', text, flags=re.DOTALL)
+        if xml_match:
+            xml_text = xml_match.group(0)
+            
+            # Extract task
+            task_match = re.search(r'<function=task>\n?(.*?)\n?</function>', xml_text, flags=re.DOTALL)
+            task = task_match.group(1).strip() if task_match else "Exploration command"
+            
+            # Extract run_command
+            cmd_match = re.search(r'<function=run_command>\n?(.*?)\n?</function>', xml_text, flags=re.DOTALL)
+            cmd = cmd_match.group(1).strip() if cmd_match else ""
+            
+            # If we didn't find the Qwen specific tags, try generic XML extraction
+            if not cmd:
+                # Fallback for `<file>` reads if the LLM hallucinated a read function
+                file_match = re.search(r'<file>\n?(.*?)\n?</file>', xml_text, flags=re.DOTALL)
+                if file_match:
+                    cmd = f"cat {file_match.group(1).strip()}"
 
-        # Strip markdown fences if present
-        if text.startswith("```"):
-            text = text.split("\n", 1)[1] if "\n" in text else text[3:]
-            text = text.rsplit("```", 1)[0]
+            if cmd:
+                return ChatResponse(
+                    mode="ACTION",
+                    message="I'll run a shell command to investigate.",
+                    action=ChatAction(type="shell", task=task, run_command=cmd)
+                )
+
+        # 2. Aggressively extract JSON even if prefixed by conversational text.
+        text = re.sub(r'<tool_call>.*?</tool_call>', '', text, flags=re.DOTALL)
+        
+        # 3. Try to find ```json ... ``` blocks
+        if "```json" in text:
+            json_part = text.split("```json")[1]
+            text = json_part.split("```")[0].strip()
+        elif "```" in text:
+            parts = text.split("```")
+            if len(parts) >= 3:
+                text = parts[1].strip()
+                if text.startswith("json\n"):
+                    text = text[5:]
+        else:
+            # 4. Try to find the outermost JSON object
+            start_idx = text.find("{")
+            end_idx = text.rfind("}")
+            if start_idx != -1 and end_idx != -1 and end_idx > start_idx:
+                text = text[start_idx:end_idx+1]
 
         try:
             data = json.loads(text)
@@ -239,9 +312,9 @@ class ChatSession:
                 action=action,
             )
         except (json.JSONDecodeError, KeyError, TypeError) as e:
-            logger.debug(f"Failed to parse chat response as JSON: {e}")
+            logger.debug(f"Failed to parse chat response as JSON. Error: {e}. Raw Text: {text}")
             # Treat unparseable responses as plain chat
-            return ChatResponse(mode="CHAT", message=text)
+            return ChatResponse(mode="CHAT", message=raw.strip())
 
     def _send(self, user_msg: str) -> ChatResponse:
         """Single-turn send (legacy, but kept for simplicity)."""
@@ -270,12 +343,16 @@ class ChatSession:
             current_turn += 1
             
             # 2. Build and call
-            print("ST_STEP:ANALYZING")
+            self.readable_logger.set_phase("ANALYZING")
             llm_messages = self._build_llm_messages()
             # Enable streaming for interactive sessions
             stream_mode = getattr(self, "interactive_mode", False)
             result = self._provider.complete(llm_messages, stream=stream_mode)
             response = self._parse_response(result.content or "")
+
+            # Log analysis thoughts if present
+            if response.message and response.mode == "ACTION":
+                 self.readable_logger.log_thought(response.message[:150] + "...")
             
             # 3. Add to history
             msg_assistant = ChatMessage(
@@ -289,14 +366,17 @@ class ChatSession:
             
             last_response = response
 
-            # 4. Handle Actions
             if response.mode == "ACTION" and response.action:
                 if response.action.type == "research":
-                    print("ST_STEP:RESEARCHING")
+                    self.readable_logger.set_phase("RESEARCH")
+                    console.print(f"  [warning]⚡ Researching:[/warning] {response.action.task}", style="dim")
+                elif response.action.type == "shell":
+                    self.readable_logger.log_action("shell", response.action.run_command)
+                    console.print(f"  [warning]⚡ Shell Command:[/warning] {response.action.run_command}", style="dim")
                 else:
-                    print(f"ST_STEP:EXECUTING_{response.action.type.upper()}")
+                    self.readable_logger.log_action(response.action.type, response.action.task)
+                    console.print(f"  [warning]⚡ Triggering:[/warning] {response.action.type} -> {response.action.task}", style="dim")
                 
-                print(f"  🎬 Agent triggers action: {response.action.type}")
                 action_res = self._execute_action(response.action)
                 
                 # feedback to LLM
@@ -307,15 +387,18 @@ class ChatSession:
                 )
                 self._messages.append(msg_obs)
                 save_message(self._session_id, msg_obs.to_llm())
-                
-                # If it's research, we MUST have another turn to explain
-                if response.action.type == "research":
+               
+                # If it's shell or research, we MUST have another turn to explain or iterate
+                if response.action.type in ("research", "shell"):
                     continue
 
-                
-                # For code changes, we return the plan and let the server handle it (legacy)
-                # But here we return so server can show the box
-                return response
+                # For terminal code changes (generate, fix, modify, run, cd), we synthesize a CHAT response 
+                # containing the markdown summary, and return it to UI so it's not run twice downstream.
+                return ChatResponse(
+                    mode="CHAT",
+                    message=action_res,
+                    action=None  # Cleared so calling loops don't try executing it again
+                )
 
             # 5. If it's just CHAT, we are done
             return response
@@ -355,20 +438,46 @@ class ChatSession:
             else:
                 return f"❌ Directory `{new_path}` does not exist. Try creating it first using a `run` action."
 
-        if action.type == "run":
+        if action.type == "shell":
+            return self._execute_raw_shell(action)
 
-            # Just run a command
-            if action.run_command:
-                result = executor.run_code(action.run_command)
-                if result.success:
-                    output = result.stdout[-1500:] if result.stdout else "(no output)"
-                    self._last_error = None
-                    return f"✅ Command succeeded:\n```\n{output}\n```"
-                else:
-                    error = (result.stderr or result.stdout)[-1500:]
-                    self._last_error = error
-                    return f"❌ Command failed:\n```\n{error}\n```"
-            return "No command specified."
+    def _execute_raw_shell(self, action: ChatAction) -> str:
+        """Execute a raw shell command for heuristic exploration."""
+        import subprocess
+        cmd = action.run_command or action.task
+        if not cmd:
+            return "❌ No command specified for shell action."
+        
+        try:
+            # We run it strictly in the current repo path
+            result = subprocess.run(
+                cmd,
+                shell=True,
+                cwd=self._repo_path,
+                capture_output=True,
+                text=True,
+                timeout=60 # Prevent LLM from hanging forever
+            )
+            
+            output = result.stdout
+            if result.stderr:
+                output += f"\n[STDERR]\n{result.stderr}"
+            
+            if not output.strip():
+                return f"✅ Command `{cmd}` exited with code {result.returncode} (No output)"
+            
+            # Truncate to avoid blowing up the context window
+            if len(output) > 8000:
+                output = output[:4000] + "\n\n... [OUTPUT TRUNCATED] ...\n\n" + output[-4000:]
+                
+            return f"Command `{cmd}` exited with {result.returncode}:\n```\n{output}\n```"
+        except subprocess.TimeoutExpired:
+            return f"❌ Command `{cmd}` timed out after 60 seconds."
+        except Exception as e:
+            return f"❌ Command `{cmd}` failed to execute: {e}"
+
+        if action.type == "run":
+            return self._execute_run(action, executor)
 
         # For generate/fix/modify — run the full pipeline
         try:
@@ -610,10 +719,10 @@ class ChatSession:
 
     def _approval_handler(self, stage: str, details: str) -> Any:
         """Handle interactive approval requests."""
-        print(f"\n✋ **Approval Requested: {stage.upper()}**")
-        print(f"   {details}")
+        console.print(f"\n[danger]✋ Approval Requested: {stage.upper()}[/danger]")
+        console.print(f"   [system]{details}[/system]")
         try:
-             choice = input("   Proceed? [Y/n] or enter feedback: ").strip()
+             choice = Prompt.ask("   [bold]Proceed?[/bold] [Y/n] or enter feedback", default="Y").strip()
              if choice.lower() in ('', 'y', 'yes'):
                  return True
              elif choice.lower() in ('n', 'no'):
@@ -626,23 +735,27 @@ class ChatSession:
     def loop(self):
 
         """Main interactive chat loop."""
-        print(f"\n{'═' * 60}")
-        print(f"  🤖 God Mode Agent — Chat Mode")
-        print(f"  📂 Repo: {self._repo_path}")
-        print(f"  💡 Type /help for commands, /quit to exit")
-        print(f"{'═' * 60}\n")
+        header = Panel(
+            f"[bold bright_white]God Mode Agent[/bold bright_white] — Chat Mode\n\n"
+            f"📂 [info]Repo:[/info] {self._repo_path}\n"
+            f"💡 [system]Type /help for commands, /quit to exit[/system]",
+            border_style="cyan",
+            expand=False
+        )
+        console.print(header)
 
         # Load repo context once
-        print("  📡 Scanning repo...", end="", flush=True)
-        self._load_repo_context()
-        print(" done\n")
+        with console.status("[info]Scanning repository topology...[/info]", spinner="dots") as status:
+            self._load_repo_context()
+        console.print("  [success]✔ Repo mapped[/success]\n")
 
         while True:
             # Prompt
             try:
-                user_input = input("\033[1;36m  you>\033[0m ").strip()
+                # Wait for input
+                user_input = Prompt.ask("\n[user]you>[/user]").strip()
             except (EOFError, KeyboardInterrupt):
-                print("\n\n  👋 Goodbye!")
+                console.print("\n\n  👋 [bold]Goodbye![/bold]")
                 self.save_session()
                 break
 
@@ -653,51 +766,35 @@ class ChatSession:
             if user_input.startswith("/"):
                 result = self._handle_command(user_input)
                 if result == "QUIT":
-                    print("\n  👋 Goodbye!")
+                    console.print("\n  👋 [bold]Goodbye![/bold]")
                     self.save_session()
                     break
                 if result is not None:
                     for line in result.split("\n"):
-                        print(f"  {line}")
-                    print()
+                        console.print(f"  {line}")
+                    console.print()
                     continue
 
             # Send to LLM
-            print()
+            console.print()
             start = time.time()
             try:
-                response = self._send(user_input)
+                with console.status(f"[agent]🤖 Agent is thinking...[/agent]", spinner="point") as status:
+                    response = self._send(user_input)
             except Exception as e:
-                print(f"  ❌ LLM error: {e}\n")
+                console.print(f"  [danger]❌ LLM error:[/danger] {e}\n")
                 continue
 
-            # Display message
-            for line in response.message.split("\n"):
-                print(f"  \033[1;32m🤖\033[0m {line}")
+            # Display message as Markdown
+            if response.message:
+                console.print(Panel(Markdown(response.message), border_style="dim", title="[agent]🤖 Agent[/agent]", title_align="left"))
 
-            # Execute action if needed
-            if response.mode == "ACTION" and response.action:
-                action = response.action
-                print(f"\n  ⚡ Executing: {action.type} — {action.task}")
-                print(f"  {'─' * 50}")
-
-                result = self._execute_action(action)
-
-                print(f"  {'─' * 50}")
-                for line in result.split("\n"):
-                    print(f"  {line}")
-
-                # Add result to conversation memory
-                self._messages.append(ChatMessage(
-                    role="assistant",
-                    content=f"[Execution result]: {result}",
-                    timestamp=datetime.now().isoformat(),
-                ))
-
+            # (Action execution is now strictly encapsulated inside `_send_agentic` 
+            # and surfaces its result directly as `response.message` for safe, single rendering)
 
             elapsed = time.time() - start
-            print(f"  \033[2m({elapsed:.1f}s)\033[0m\n")
+            console.print(f"  [system]({elapsed:.1f}s)[/system]\n")
 
         # Auto-save on exit
         path = self.save_session()
-        print(f"  📝 Session saved: {path}")
+        console.print(f"  📝 Session saved: {path}")

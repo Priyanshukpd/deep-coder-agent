@@ -41,6 +41,11 @@ logger = logging.getLogger(__name__)
 
 from agent.core.process_manager import ProcessManager, ProcessInfo
 from agent.planning.memory import ArchitectureMemory
+from agent.core.prompt import prompt_manager
+from agent.security.secrets_policy import SecretsPolicy
+from agent.core.logger import HumanReadableLogger
+from agent.security.sandbox import SandboxedRunner
+from agent.core.plugin_loader import PluginLoader
 
 MAX_FIX_ATTEMPTS = int(os.environ.get("GOD_MODE_MAX_FIX_ATTEMPTS", "7"))
 
@@ -172,15 +177,24 @@ class TaskExecutor:
         self.fix_attempts_used = 0
         self.last_run_success = True
         self.last_error: Optional[str] = None
+        self.readable_logger = HumanReadableLogger(self._repo_path)
         self._stack_profile = None  # Set during execute()
         self._process_manager = ProcessManager()
         self._process_manager = ProcessManager()
         self._memory = ArchitectureMemory(self._repo_path, self._provider)
         self._accumulated_feedback: list[str] = []
         
-        from agent.core.prompt import prompt_manager
-        from agent.security.sandbox import SandboxedRunner
-        from agent.core.plugin_loader import PluginLoader
+        # Telemetry & Execution Limits
+        self.max_turns = 100
+        self.max_time_minutes = 120
+        self.stats = {
+            "start_time_ms": 0,
+            "total_duration_ms": 0,
+            "rounds": 0,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "estimated_cost": 0.0
+        }
         
         self._sandbox = SandboxedRunner(working_directory=self._repo_path)
         self._plugin_loader = PluginLoader(self._repo_path)
@@ -188,7 +202,6 @@ class TaskExecutor:
         self.prompt_manager = prompt_manager
 
         self._approval_callback = None
-        self._knowledge_graph = None
 
 
     def set_approval_callback(self, callback):
@@ -457,14 +470,6 @@ class TaskExecutor:
         print(f"  ✅ Created .env")
 
 
-    def _ensure_knowledge_graph(self):
-        if not self._knowledge_graph:
-            from agent.core.knowledge_graph import KnowledgeGraph
-            logger.info("Building Knowledge Graph...")
-            self._knowledge_graph = KnowledgeGraph(self._repo_path)
-            self._knowledge_graph.build()
-            logger.info(f"Knowledge Graph built with {len(self._knowledge_graph.graph)} nodes.")
-
     def _read_repo_context(self) -> str:
         """Read the repo structure and key files for context."""
         context_parts = []
@@ -562,14 +567,6 @@ class TaskExecutor:
         # If large repo, select relevant
         relevant = self._select_relevant_files(task, candidates)
         
-        # Augment with Knowledge Graph
-        self._ensure_knowledge_graph()
-        if self._knowledge_graph:
-            related = self._knowledge_graph.get_related_files(relevant)
-            if len(related) > len(relevant):
-                 logger.info(f"Knowledge Graph added {len(related) - len(relevant)} related files.")
-                 relevant = list(related)
-
         if not relevant:
              return self._read_repo_context()
 
@@ -614,13 +611,7 @@ class TaskExecutor:
         # 1. Identify key files via LLM
         relevant = self._select_relevant_files(task, candidates)
         
-        # 2. Augment with Knowledge Graph
-        self._ensure_knowledge_graph()
-        if self._knowledge_graph:
-            related = self._knowledge_graph.get_related_files(relevant)
-            relevant = list(set(relevant) | set(related))
-
-        # 3. Read content
+        # 2. Read content
         research_notes = []
         for rel_path in relevant[:10]: # Cap at 10 files for research
              full_path = os.path.join(self._repo_path, rel_path)
@@ -1321,33 +1312,49 @@ class TaskExecutor:
         Expert Handoff Loop (Phase 64).
         Decouples Research, Planning, and Execution into specialized missions.
         """
+        import time
         from agent.state import TaskIntent
         from agent.core.react_orchestrator import ReActOrchestrator
         from agent.planning.ambiguity_analyzer import AmbiguityAnalyzer
 
+        self.stats["start_time_ms"] = int(time.time() * 1000)
+        
+        # Phase 82: Re-init logger with task context for premium markdown header
+        from agent.core.logger import SessionLogger
+        self.readable_logger = SessionLogger(self._repo_path, task=task)
+
         # ── Step 1: EXPLORER Mission ──
+        self.readable_logger.set_phase("RESEARCH")
         print(f"🔍 [Explorer] Mapping repository context...")
         research_notes = self._research_task(task)
 
         # ── Step 2: AMBIGUITY Check ──
-        analyzer = AmbiguityAnalyzer(self._provider)
-        files = "\n".join(self._knowledge_graph.get_all_files()[:100]) if self._knowledge_graph else ""
-        repo_context = f"Research Notes:\n{research_notes[:1000]}\n\nFiles:\n{files}"
-        
-        ambiguity = analyzer.analyze(task, repo_context)
-        if ambiguity.is_ambiguous:
-            return ExecutionPlan(
-                task=task,
-                summary="Clarification required",
-                is_complete=False,
-                is_ambiguous=True,
-                questions=ambiguity.questions,
-                best_guess_scenario=ambiguity.best_guess_scenario
-            )
+        # Skip if we already have feedback to avoid infinite re-analysis loops
+        if not self._accumulated_feedback:
+            analyzer = AmbiguityAnalyzer(self._provider)
+            
+            # We deprecated _knowledge_graph, relying on research_notes for ambiguity check
+            repo_context = f"Research Notes:\n{research_notes[:1000]}"
+            
+            ambiguity = analyzer.analyze(task, repo_context, feedback=self._accumulated_feedback)
+            if ambiguity.is_ambiguous:
+                return ExecutionPlan(
+                    task=task,
+                    summary="Clarification required",
+                    is_complete=False,
+                    is_ambiguous=True,
+                    questions=ambiguity.questions,
+                    best_guess_scenario=ambiguity.best_guess_scenario
+                )
+        else:
+            logger.info("Skipping ambiguity check: feedback already provided.")
+            # Set a dummy ambiguity object that is NOT ambiguous to proceed
+            from agent.planning.ambiguity_analyzer import AmbiguityResult
+            ambiguity = AmbiguityResult(is_ambiguous=False)
 
         # ── Step 4: IMPLEMENTER Mission (via ReAct) ──
-        if intent in [TaskIntent.DEVELOP.value, TaskIntent.FIX.value, "develop", "fix"]:
-            print(f"🚀 [Implementer] Executing surgical edits...")
+        if intent in [TaskIntent.DEVELOP.value, TaskIntent.FIX.value, TaskIntent.GENERATE.value, "develop", "fix", "generate"]:
+            print(f"🚀 [Implementer] Executing autonomous actions...")
             orchestrator = ReActOrchestrator(self._provider, self)
             success = orchestrator.orchestrate(task, intent, full_history=full_history)
             self.last_run_success = success
@@ -1369,16 +1376,16 @@ class TaskExecutor:
         try:
             current_task = task
             total_turns = 0
-            MAX_TURNS = 5 # Prevent infinite loops
 
-            while total_turns < MAX_TURNS:
+            while total_turns < self.max_turns:
                 total_turns += 1
+                self.stats["rounds"] = total_turns
                 if total_turns > 1:
-                    print(f"\n🔄 --- CONTINUING TASK (Turn {total_turns}/{MAX_TURNS}) ---")
+                    print(f"\n🔄 --- CONTINUING TASK (Turn {total_turns}/{self.max_turns}) ---")
                     # Refresh research for the next step
                     research_notes = self._research_task(current_task)
 
-                print("ST_STEP:PLANNING")
+                self.readable_logger.set_phase("PLANNING")
                 plan = self._execute_inner(
                     current_task, kill_switch,
                     PlanEnvelopeValidator, SupplyChainChecker,
@@ -1399,11 +1406,18 @@ class TaskExecutor:
                 print(f"\n📍 Phase complete, but task is not finished. Re-planning...")
                 current_task = f"{task}\n\nCompleted so far: {plan.summary}"
                 
+                duration_min = (int(time.time() * 1000) - self.stats["start_time_ms"]) / (1000 * 60)
+                if duration_min > self.max_time_minutes:
+                     print(f"⚠️ Reached max execution time of {self.max_time_minutes} minutes. Terminating loop.")
+                     break
+                
             return plan
         finally:
             kill_switch.disarm()
             self.cleanup_background()
-
+            self.stats["total_duration_ms"] = int(time.time() * 1000) - self.stats["start_time_ms"]
+            # To-Do: accumulate real token counts per turn
+            
     def _execute_inner(self, task, kill_switch,
                        PlanEnvelopeValidator, SupplyChainChecker,
                        TaskIsolation, SecretsPolicy,
@@ -1547,7 +1561,7 @@ class TaskExecutor:
             print(f"  ⚠️  Task isolation skipped ({e})")
 
         # ── Step 5: Generate and write code ──
-        print("ST_STEP:EXECUTING")
+        self.readable_logger.set_phase("EXECUTING")
         print(f"\n⚡ Generating code...\n")
         secrets = SecretsPolicy(strict=False)  # Warn but don't block
 
@@ -1751,7 +1765,7 @@ class TaskExecutor:
                     
                     # ── Step 10: Visual Verification (Phase 44) ──
                     if plan.visual_verification:
-                        print("ST_STEP:VERIFYING")
+                        self.readable_logger.set_phase("VERIFYING")
                         v_success = self._visual_verify(plan.visual_verification)
                         if not v_success:
                              print(f"  ⚠️  Visual verification failed. Attempting fix...")
@@ -1832,6 +1846,7 @@ class TaskExecutor:
 
         # ── Step 10: Verification pipeline ──
         # ── Step 10: Verification pipeline (with Auto-Healing) ──
+        self.readable_logger.set_phase("VERIFYING")
         print(f"\n🧪 Running verification pipeline...")
         skip = [VerifyTier.INTEGRATION_TEST, VerifyTier.CI_GATE]
         if not plan.test_command:
