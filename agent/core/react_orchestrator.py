@@ -72,6 +72,7 @@ class ReActOrchestrator:
             
             if not thought_action:
                 logger.error("Failed to decide next step.")
+                self._print_failure_summary(task, "LLM failed to produce a valid action (parse error)")
                 return False
                 
             step = ReActStep(
@@ -153,7 +154,46 @@ class ReActOrchestrator:
                 break
             
         print(f"  ⚠️  Max steps ({self._max_steps}) or timeout reached without completion.")
+        self._print_failure_summary(task, "Max steps or timeout reached")
         return False
+
+    def _print_failure_summary(self, task: str, reason: str):
+        """Generates a final summary of what was discovered if the agent fails or times out."""
+        if not self._history:
+            return
+            
+        print(f"\n📝 Generating Wrap-up Summary ({reason})...")
+        system_prompt = (
+            "You are an assistant reporting on a failed or incomplete autonomous agent run.\n"
+            "Review the history of steps taken and provide a concise, user-friendly summary of what was discovered, "
+            "what was completed, and what the root cause of the current issue seems to be. "
+            "If the agent realized something was already correct (e.g. no circular imports), mention it explicitly!"
+        )
+        
+        user_content = f"Original Task: {task}\nReason for stopping: {reason}\n\nHistory:\n"
+        for i, h in enumerate(self._history, 1):
+            obs = (h.observation[:300] + '...') if len(h.observation) > 300 else h.observation
+            user_content += f"Step {i}:\n  Thought: {h.thought}\n  Action: {h.action}({json.dumps(h.action_input)})\n  Observation: {obs}\n"
+            
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_content}
+        ]
+        
+        try:
+            # We don't use complete_with_tools here, just standard completion to get raw text
+            result = self._provider.complete(messages, tools=None)
+            print(f"\n============================================================")
+            print(f"📋 FINAL WRAP-UP SUMMARY:")
+            print(f"============================================================")
+            print(result.content)
+            print(f"============================================================\n")
+            
+            # Phase 82: Persistent Logging
+            if self._executor and hasattr(self._executor, "readable_logger"):
+                self._executor.readable_logger.log_thought(f"FINAL SUMARY: {result.content}")
+        except Exception as e:
+            logger.error(f"Failed to generate summary: {e}")
 
     def _decide_next_step(self, task: str, intent: str, stuck_hint: str = "", remaining_turns: int = 15, remaining_seconds: int = 300) -> Optional[Dict[str, Any]]:
         """Ask the LLM for the next thought and action."""
