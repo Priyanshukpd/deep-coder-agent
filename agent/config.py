@@ -138,9 +138,11 @@ class AgentConfig:
             return bool(self.together_api_key)
         if self.provider == "openai":
             return bool(self.openai_api_key)
-        if self.provider in ("openrouter", "ollama"):
-            pconf = PROVIDER_CONFIGS.get(self.provider)
+        if self.provider == "openrouter":
+            pconf = PROVIDER_CONFIGS.get("openrouter")
             return bool(pconf.api_key) if pconf else False
+        if self.provider == "ollama":
+            return True
         return bool(self.together_api_key) or bool(self.openai_api_key)
 
     @property

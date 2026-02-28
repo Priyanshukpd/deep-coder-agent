@@ -149,9 +149,9 @@ class ReActOrchestrator:
                         print(f"  📈 Progress detected! Dynamically extending budget by {extension} turns ({self._max_steps} total).")
                         self._executor.readable_logger.log_thought(f"Dynamic Budget Scaling triggered: Extended by {extension} turns due to progress.")
             
-                    if remaining_seconds <= 0:
-                        print(f"  🛑 Hard timeout reached ({self._total_timeout}s). Terminating mission.")
-                        break
+                if remaining_seconds <= 0:
+                    print(f"  🛑 Hard timeout reached ({self._total_timeout}s). Terminating mission.")
+                    break
                 
             print(f"  ⚠️  Max steps ({self._max_steps}) or timeout reached without completion.")
             self._print_failure_summary(task, "Max steps or timeout reached")
@@ -235,6 +235,18 @@ class ReActOrchestrator:
             result = self._provider.complete_with_tools(messages, tools=[REACT_STEP_TOOL])
             if result and result.function_name == "decide_step":
                 return result.arguments
+            
+            # Fallback: Model called the tool directly instead of using decide_step
+            valid_actions = ["search_code", "ls", "read_file", "write_file", "run_command", "spawn_subagent", "memory_store", "memory_retrieve", "todo_add", "finish"]
+            if result and result.function_name in valid_actions:
+                logger.warning(f"Auto-correcting direct tool call: {result.function_name}")
+                return {
+                    "thought": "(Model directly invoked tool)",
+                    "action": result.function_name,
+                    "action_input": result.arguments
+                }
+
+            logger.error(f"Function name mismatch or None. Result: {result}")
             return None
         except Exception as e:
             logger.error(f"Error in decide_next_step: {e}")

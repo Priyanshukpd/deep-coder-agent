@@ -62,6 +62,7 @@ class CompletionResult:
     finish_reason: Optional[str] = None
     sampling_policy_hash: str = ""
     raw_response: Any = field(default=None, repr=False)
+    reasoning_content: Optional[str] = None
 
     @property
     def has_tool_calls(self) -> bool:
