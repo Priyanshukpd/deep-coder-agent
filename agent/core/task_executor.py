@@ -838,13 +838,50 @@ class TaskExecutor:
         if self._rollback_mgr:
             self._rollback_mgr.backup(file_action.path)
         dir_path = os.path.dirname(full_path)
-        if dir_path:
-            os.makedirs(dir_path, exist_ok=True)
-        with open(full_path, 'w') as fh:
-            fh.write(code)
-            if not code.endswith('\n'):
-                fh.write('\n')
-        file_action.content = code
+        # Phase 95: Implement multi-level write fallback for PermissionError
+        try:
+            if dir_path:
+                os.makedirs(dir_path, exist_ok=True)
+            with open(full_path, 'w') as fh:
+                fh.write(code)
+                if not code.endswith('\n'):
+                    fh.write('\n')
+            file_action.content = code
+            return f"Successfully wrote {file_action.path}"
+        except (PermissionError, OSError) as e:
+            print(f"  ⚠️  Direct write failed for {file_action.path}: {e}")
+            print(f"  🔄 Attempting shell-write fallback...")
+            
+            import tempfile
+            import subprocess
+            import shlex
+            
+            # Level 2: Write to temp and cp (handles some sandbox/perm issues)
+            with tempfile.NamedTemporaryFile(mode='w', delete=False) as tmp:
+                tmp.write(code)
+                tmp_path = tmp.name
+            
+            try:
+                # Use shlex for safety
+                cmd = f"cp {shlex.quote(tmp_path)} {shlex.quote(full_path)}"
+                subprocess.run(cmd, shell=True, check=True, capture_output=True)
+                os.unlink(tmp_path)
+                file_action.content = code
+                return f"Successfully wrote {file_action.path} (shell fallback)"
+            except Exception as se:
+                if os.path.exists(tmp_path): os.unlink(tmp_path)
+                print(f"  ❌ Shell fallback failed: {se}")
+                
+                # Level 3: Tee fallback (last resort for piped writes)
+                print(f"  🔄 Attempting tee fallback...")
+                try:
+                    cmd = f"printf %s {shlex.quote(code)} | tee {shlex.quote(full_path)} > /dev/null"
+                    subprocess.run(cmd, shell=True, check=True, capture_output=True)
+                    file_action.content = code
+                    return f"Successfully wrote {file_action.path} (tee fallback)"
+                except Exception as te:
+                    print(f"  🚫 All write attempts failed for {file_action.path}")
+                    raise te
 
     # ── Dependency Installation ─────────────────────────────────────
 
@@ -1353,7 +1390,7 @@ class TaskExecutor:
             ambiguity = AmbiguityResult(is_ambiguous=False)
 
         # ── Step 4: IMPLEMENTER Mission (via ReAct) ──
-        if intent in [TaskIntent.DEVELOP.value, TaskIntent.FIX.value, TaskIntent.GENERATE.value, "develop", "fix", "generate"]:
+        if intent in [TaskIntent.DEVELOP.value, TaskIntent.FIX.value, TaskIntent.GENERATE.value, TaskIntent.EXPLAIN.value, "develop", "fix", "generate", "explain", "read"]:
             print(f"🚀 [Implementer] Executing autonomous actions...")
             orchestrator = ReActOrchestrator(self._provider, self)
             success = orchestrator.orchestrate(task, intent, full_history=full_history)

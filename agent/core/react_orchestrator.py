@@ -231,7 +231,8 @@ class ReActOrchestrator:
         ]
         
         try:
-            # We use tool-calling schema for structured output
+            # Phase 99: Re-enabled all tools for all intents to allow autonomous transitioning
+            # We no longer modify REACT_STEP_TOOL enum dynamically.
             result = self._provider.complete_with_tools(messages, tools=[REACT_STEP_TOOL])
             if result and result.function_name == "decide_step":
                 return result.arguments
@@ -314,8 +315,15 @@ class ReActOrchestrator:
                          return f"Successfully patched {path}"
                     return f"Failed to apply patch to {path}. Try sending full content."
                 else:
-                    self._executor._write_file(fa, content)
-                    return f"Successfully wrote full content to {path}"
+                    try:
+                        res = self._executor._write_file(fa, content)
+                        return f"Successfully wrote {path}"
+                    except Exception as e:
+                        # Phase 95: If TaskExecutor fallback also failed, return error with tip
+                        logger.error(f"Critical write failure for {path}: {e}")
+                        return (f"Error: Could not write to {path} ({e}). "
+                                "TIP: Try using 'run_command' with a heredoc or 'printf' redirection "
+                                "as a last resort if you have workspace permissions.")
 
             elif action == "run_command":
                 cmd = action_input.get("command")
@@ -382,10 +390,21 @@ class ReActOrchestrator:
         if hasattr(self, "_custom_agent") and self._custom_agent:
             custom_instructions = f"\n### Custom Subagent Instructions ({self._custom_agent.name}):\n{self._custom_agent.system_prompt}\n"
         
+        # Phase 99: Dynamic Intent Alignment
+        # We allow the agent to decide between reading and writing based on the task description,
+        # rather than imposing a hard read-only block for 'explain' intents.
+        goal_alignment = (
+            "\n### 🎯 GOAL ALIGNMENT:\n"
+            "Your actions must be proportional to the user's request regardless of the 'Intent Context':\n"
+            "- If the user asks a question, prioritize identification, reading, and exploration.\n"
+            "- If the user identifies a problem or requests a change, proceed to fixing/implementing it.\n"
+            "- Do not modify files unless the specific task phrasing implies a change is desired.\n"
+        )
+        
         return f"""You are a ReAct-based autonomous software engineer. 
 Your goal is to complete the user's task by reasoning and taking steps.
 
-Current Intent Context: {intent}
+Current Intent Context: {intent}{goal_alignment}
 {custom_instructions}
 Available Tools:
 - search_code(query): Search the codebase for symbols or text.

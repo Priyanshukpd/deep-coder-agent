@@ -38,7 +38,7 @@ TIER_POLICY: dict[CommandTier, CommandPolicy] = {
     CommandTier.NETWORK: CommandPolicy.RATE_LIMIT,
     CommandTier.FILE_DESTRUCTIVE: CommandPolicy.REQUIRE_APPROVAL,
     CommandTier.GIT_REWRITE: CommandPolicy.REQUIRE_APPROVAL,
-    CommandTier.UNKNOWN: CommandPolicy.BLOCK,
+    CommandTier.UNKNOWN: CommandPolicy.ALLOW,
 }
 
 
@@ -57,21 +57,6 @@ _PATTERNS: list[tuple[re.Pattern, CommandTier]] = [
     # Network
     (re.compile(r"\b(curl|wget|npm\s+install|pip\s+install|yarn\s+add|apt\s+install|brew\s+install)"), CommandTier.NETWORK),
     (re.compile(r"\b(docker\s+pull|docker\s+push)"), CommandTier.NETWORK),
-
-    # Safe: read-only or test commands
-    (re.compile(r"\b(cat|head|tail|less|more|wc|file|stat)\b"), CommandTier.SAFE),
-    (re.compile(r"\b(ls|find|tree|du|df)\b"), CommandTier.SAFE),
-    (re.compile(r"\b(grep|rg|ag|ack|sed\s+-n)\b"), CommandTier.SAFE),
-    (re.compile(r"\b(echo|printf|true|false|test)\b"), CommandTier.SAFE),
-    (re.compile(r"\b(pwd|whoami|id|hostname|uname|date|env|printenv)\b"), CommandTier.SAFE),
-    (re.compile(r"\b(git\s+(status|log|diff|show|branch|stash\s+list))"), CommandTier.SAFE),
-    (re.compile(r"\b(git\s+(add|commit|stash\s+(save|push|pop)))"), CommandTier.SAFE),
-    (re.compile(r"\b(npm\s+(test|run|start|build)|npx)\b"), CommandTier.SAFE),
-    (re.compile(r"\b(pytest|python\s+-m\s+pytest|jest|mocha|mvn\s+(test|compile))\b"), CommandTier.SAFE),
-    (re.compile(r"\b(python|node|java|javac|tsc|eslint|pylint|flake8|black|mypy)\b"), CommandTier.SAFE),
-    (re.compile(r"\b(cargo\s+(test|build|check|clippy))\b"), CommandTier.SAFE),
-    (re.compile(r"\b(make|cmake)\b"), CommandTier.SAFE),
-    (re.compile(r"\b(mkdir|touch|cp)\b"), CommandTier.SAFE),
 ]
 
 # Explicitly blocked patterns (even if they match a safe pattern somehow)

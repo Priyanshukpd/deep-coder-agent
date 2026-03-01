@@ -74,7 +74,8 @@ Goals:
 - generate: Creating a new project or file from nothing.
 - meta: Meta-commands for the agent (e.g., stop, wait, redo).
 
-THE AMBITION DIRECTIVE: For tasks that have no prior context, feel free to be ambitious and demonstrate creativity with your implementation. Use judicious initiative to fix vague prompts like "improve the UI" without halting repeatedly for user approval. Set `clarification_needed=false` unless the request is truly impossible to guess.
+    * CRITICAL DISAMBIGUATION RULE: If the task contains action verbs like 'run', 'make', 'start', 'install', 'deploy', 'launch', 'serve', 'setup', 'execute', 'apply', 'enable', 'configure', 'restart', 'verify', 'debug', 'monitor', 'test', it is NOT 'explain'. It must be 'develop' or 'fix'. Prioritize the action even if the user asks for analysis first.
+    * Output ONLY the JSON block.
 
 The agent will autonomously determine the fine-grained steps (ReAct loop) once the goal is set."""
 
@@ -195,7 +196,7 @@ class IntentClassifier:
             )
 
         # High Confidence DEVELOP (Consolidated)
-        if any(w in lower_input for w in ["add", "feature", "refactor", "optimize", "ui", "framework", "migrate", "implement", "update", "build", "change"]):
+        if any(w in lower_input for w in ["add", "feature", "refactor", "optimize", "ui", "framework", "migrate", "implement", "update", "build", "change", "run", "make", "start", "install", "deploy", "launch", "serve", "setup", "execute", "apply", "enable", "configure", "restart", "verify", "debug", "monitor", "test"]):
             return IntentResult(
                 intent=TaskIntent.DEVELOP,
                 confidence=0.90,
@@ -218,14 +219,20 @@ class IntentClassifier:
                 reasoning="Meta-command or capability query detected.",
             )
 
+        # High Confidence EXPLAIN (Read-Only)
+        if any(w in lower_input for w in ["explain", "read", "describe", "analyze", "what does", "how does"]):
+            return IntentResult(
+                intent=TaskIntent.EXPLAIN,
+                confidence=0.85,
+                reasoning="Read-only inquiry keywords present.",
+            )
+
         # Low Confidence / Ambiguous
         if "check" in lower_input or "look" in lower_input:
             return IntentResult(
                 intent=TaskIntent.EXPLAIN,
                 confidence=0.60,
                 reasoning="Vague request. Defaulting to EXPLAIN (read-only).",
-                clarification_needed=False,
-                suggested_question=None,
             )
 
         # Default

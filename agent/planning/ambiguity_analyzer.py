@@ -16,7 +16,11 @@ Compare the Task against the Repository Context provided.
 Identify:
 1. Missing technical details (e.g., which framework to use if multiple exist).
 2. Missing UX/Functional details (e.g., what happens on error).
-3. Vague intent (e.g., "fix the bug" without specifying which bug).
+3. Vague intent (e.g., \"fix the bug\" without specifying which bug).
+
+### DO NOT ASK ABOUT (ACTION BIAS):
+- **Execution Environments**: If a project has multiple ways to run (e.g., `docker-compose.yml` vs `requirements.txt` vs `Dockerfile`), DO NOT ask the user which to use. Assume the standard/robust option (Docker > Local).
+- **Missing Credentials**: If the app requires a DB (e.g., PostgreSQL) but no credentials are provided, DO NOT ask for them. Assume you will use a local fallback (like SQLite or `.db` files) if available.
 
 Output a JSON object:
 {
@@ -26,8 +30,10 @@ Output a JSON object:
   "reasoning": "Brief explanation of why you think it's ambiguous or clear."
 }
 
-If the task is PERFECTLY CLEAR, set "is_ambiguous" to false and leave questions empty.
+If the task is PERFECTLY CLEAR, set \"is_ambiguous\" to false and leave questions empty.
 Avoid being pedantic. Only ask if it truly prevents a correct implementation.
+
+CRITICAL OVERRIDE: If the ONLY missing details are how to run the app (Docker vs Local) or how to connect to a database (Missing Postgres URL), you MUST set `"is_ambiguous": false` and proceed. You will figure it out during execution using your Action Bias.
 """
 
 @dataclass

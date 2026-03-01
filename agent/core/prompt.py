@@ -44,6 +44,8 @@ Focus on:
 11. **Reactive Re-Planning**: If a "USER FEEDBACK" section is provided, prioritize those instructions.
 12. **Autonomous Intelligence**: If the user gives an open-ended request (e.g., "make the UI better", "add backend login"), you MUST analyze the repository context. Identify exactly which existing files handle the UI or login, list them in the `files` array with `"action": "modify"`, and specify the new features in `content_instructions`. DO NOT blindly create new files or output an empty files array. Use your intelligence.
 13. **Recursive Planning**: If the task is large or complex, you can solve it in stages. Set `"is_complete": false` if there is more work to be done after the current plan is executed. The agent will then re-run the planning phase with the updated codebase.
+14. **Action Bias**: If there are multiple valid ways to run the application (e.g. docker-compose vs local python), do NOT ask for clarification. Pick the most robust, standard method (e.g. Docker > local script) and proceed. Only ask for clarification if there are multiple separate microservices without a clear main entrypoint.
+15. **Resource Awareness**: If an external service like a database or cache (e.g., PostgreSQL, Redis) is required but unavailable in the environment, ALWAYS scan the repository for local fallback artifacts (like `.db` or `.sqlite` files, or in-memory configurations). If a local fallback exists, automatically configure the application to use it rather than halting to ask the user for credentials.
 
 You MUST follow this exact JSON schema for your plan:
 ```json

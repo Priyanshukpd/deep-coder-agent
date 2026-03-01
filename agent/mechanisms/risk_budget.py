@@ -52,7 +52,7 @@ class RiskBudget:
     max_diff_lines: int = 200           # single diff — confirm if exceeded
     max_cumulative_diff_lines: int = 500 # total across task — hard stop
     max_shell_commands: int = 20
-    max_execution_time_sec: int = 600    # 10 minutes
+    max_execution_time_sec: int = 1200    # 20 minutes
     max_files_modified: int = 5          # confirm if exceeded
     require_confirmation_on_large_diff: bool = True
 

@@ -168,19 +168,11 @@ class StateMachineController:
         if not result.is_confident:
             self.logger.logger.warning(
                 f"Intent confidence {result.confidence:.2f} < {result.CONFIDENCE_THRESHOLD}. "
-                f"Triggering Ambiguity Fallback."
+                f"Ambiguity Fallback Triggered. Proceeding with best guess."
             )
-            
-            # Transition to FEEDBACK_WAIT to ask user
-            self.transition_to(
-                AgentState.FEEDBACK_WAIT, 
-                "Ambiguous Intent", 
-                metadata={
-                    "suggested_question": result.suggested_question,
-                    "confidence": result.confidence
-                }
-            )
-            return False
+            # Proceed with the best guess instead of pausing
+            self.intent = result.intent
+            return True
 
         # If confident, set intent and proceed
         self.intent = result.intent

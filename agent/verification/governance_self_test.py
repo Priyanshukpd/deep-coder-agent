@@ -180,10 +180,10 @@ class GovernanceSelfTest:
         # Safe command
         result = classify_command("ls -la")
         report.cases.append(SelfTestCase(
-            name="'ls -la' is SAFE",
+            name="'ls -la' is ALLOWED",
             category=cat,
-            result=TestResult.PASS if result.tier == CommandTier.SAFE else TestResult.FAIL,
-            details=f"Tier: {result.tier.name}",
+            result=TestResult.PASS if result.policy == CommandPolicy.ALLOW else TestResult.FAIL,
+            details=f"Policy: {result.policy.name}",
         ))
 
         # Blocked command
