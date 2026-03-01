@@ -523,18 +523,11 @@ class TaskExecutor:
             
         file_list_str = "\n".join(candidates[:500]) # Scan top 500 files
         
-        sys_msg = RELEVANCE_PROMPT.format(
-            task=task,
-            stack=self._stack_profile.display_name if self._stack_profile else "Unknown"
-        )
-        
-        from agent.planning.memory import ArchitectureMemory
-        arch_mem = ArchitectureMemory(self._repo_path, self._provider).read_context()
-        if arch_mem:
-             sys_msg += f"\n\n### [LONG-TERM MEMORY]\n{arch_mem}"
-        
         messages = [
-            {"role": "system", "content": sys_msg},
+            {"role": "system", "content": RELEVANCE_PROMPT.format(
+                task=task,
+                stack=self._stack_profile.display_name if self._stack_profile else "Unknown"
+            )},
             {"role": "user", "content": f"File list:\n{file_list_str}"},
         ]
         
@@ -839,53 +832,18 @@ class TaskExecutor:
     # ── File Operations ─────────────────────────────────────────────
 
     def _write_file(self, file_action: FileAction, code: str):
-        """Write generated code to a file.
-
-        Phase 95: Shell-write fallback — when a direct open() fails with
-        PermissionError (e.g. sandboxed directory), automatically retry by
-        writing the content via a shell `tee` subprocess. This mirrors what
-        a developer would do manually in the terminal.
-        """
+        """Write generated code to a file."""
         full_path = os.path.join(self._repo_path, file_action.path)
         # Backup for rollback before writing
         if self._rollback_mgr:
             self._rollback_mgr.backup(file_action.path)
         dir_path = os.path.dirname(full_path)
         if dir_path:
-            try:
-                os.makedirs(dir_path, exist_ok=True)
-            except PermissionError:
-                subprocess.run(f"mkdir -p {dir_path}", shell=True, check=False)
-
-        try:
-            # Fast path: direct Python write
-            with open(full_path, 'w') as fh:
-                fh.write(code)
-                if not code.endswith('\n'):
-                    fh.write('\n')
-        except PermissionError:
-            # Fallback: shell tee (works in restricted/sandboxed directories)
-            import tempfile, shlex
-            with tempfile.NamedTemporaryFile(mode='w', suffix='.tmp', delete=False) as tmp:
-                tmp.write(code)
-                if not code.endswith('\n'):
-                    tmp.write('\n')
-                tmp_path = tmp.name
-            result = subprocess.run(
-                f"cp {shlex.quote(tmp_path)} {shlex.quote(full_path)}",
-                shell=True, capture_output=True, text=True
-            )
-            os.unlink(tmp_path)
-            if result.returncode != 0:
-                # Last resort: tee via stdin pipe
-                result2 = subprocess.run(
-                    ["tee", full_path],
-                    input=code, capture_output=True, text=True
-                )
-                if result2.returncode != 0:
-                    raise PermissionError(
-                        f"All write methods failed for {full_path}: {result.stderr} | {result2.stderr}"
-                    )
+            os.makedirs(dir_path, exist_ok=True)
+        with open(full_path, 'w') as fh:
+            fh.write(code)
+            if not code.endswith('\n'):
+                fh.write('\n')
         file_action.content = code
 
     # ── Dependency Installation ─────────────────────────────────────
@@ -1033,16 +991,9 @@ class TaskExecutor:
         if poll is not None:
             # Process already exited - check output lines
             output = "".join(info.output_lines)
-            
-            # Phase 90: Smart Port Detection
-            hint = ""
-            lower_out = output.lower()
-            if "address already in use" in lower_out or "errno 48" in lower_out or "port is already allocated" in lower_out:
-                hint = "\n\n[HEURISTIC HINT: Port is already in use. Use 'lsof -i :PORT' to find the PID and 'kill -9 PID' to stop it, or run the server on a different port.]"
-            
             print(f"  Server exited immediately (code {poll})")
-            print(f"     Output: {output[-4000:]}")
-            return RunResult(False, output[-4000:] + hint, "", poll, command)
+            print(f"     Output: {output[-500:]}")
+            return RunResult(False, output, "", poll, command)
 
         # Process is still running - try health check
         print(f"  Server started (PID: {info.process.pid})")
@@ -1155,50 +1106,6 @@ class TaskExecutor:
                 return False
         except Exception as e:
             print(f"  ⚠️  Visual Check Error: {e}")
-            return False
-
-    def _analyze_error_with_llm(self, error_text: str, plan: ExecutionPlan) -> dict:
-        """
-        Phase 91: Native LLM-Driven Error Analysis.
-        Instead of using regex to guess the broken file, we let the LLM analyze the full traceback.
-        Returns a dict: {"root_cause": str, "is_code_bug": bool, "primary_file": str, "suggested_action": str}
-        """
-        from agent.core.prompt import prompt_manager
-        import json
-        
-        system_prompt = prompt_manager.get_system_prompt("ERROR_ANALYZER")
-        
-        context_files = "\n".join([f"- {f.path} ({f.action})" for f in plan.files])
-        user_prompt = f"Command failed. Here is the context of planned files:\n{context_files}\n\nError Traceback:\n{error_text[-4000:]}"
-        
-        messages = [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt}
-        ]
-        
-        print(f"  🧠 Asking Error Analyzer to diagnose the root cause...")
-        
-        try:
-            response = self._provider.complete(messages)
-            text = response.content.strip()
-            
-            # Extract JSON
-            if "```json" in text:
-                text = text.split("```json")[1].split("```")[0].strip()
-            elif "```" in text:
-                text = text.split("```")[1].split("```")[0].strip()
-                
-            analysis = json.loads(text)
-            print(f"  🔍 Diagnosis: {analysis.get('root_cause')}")
-            if analysis.get('is_code_bug'):
-                print(f"  🎯 Target File: {analysis.get('primary_file')}")
-            else:
-                 print(f"  💡 Suggested Action: {analysis.get('suggested_action')}")
-                 
-            return analysis
-        except Exception as e:
-            print(f"  ⚠️ Error Analyzer failed to parse logic: {e}")
-            return {}
             return False
 
 
@@ -1871,28 +1778,17 @@ class TaskExecutor:
                              break # Exit fix loop if visual pass overrides a minor non-zero exit? (Heuristic)
 
                     print(f"\n🔧 Fix attempt {attempt}/{MAX_FIX_ATTEMPTS}...")
-                    
-                    self.readable_logger.set_phase("ANALYZING ERROR")
-                    analysis = self._analyze_error_with_llm(error_text, plan)
-                    
-                    if analysis and analysis.get("is_code_bug") and analysis.get("primary_file"):
-                        # Locate the exact file action object
-                        main_file = None
-                        target_path = analysis["primary_file"]
-                        for f in plan.files:
-                             if f.path.endswith(target_path) or target_path.endswith(f.path):
-                                 main_file = f
-                                 break
-                        
-                        if main_file and main_file.action != "delete":
-                            try:
-                                print(f"  🧠 Error Analyzer: Bug identified in {main_file.path}. Initiating surgical fix...")
-                                fixed_code = self.fix_error(task, main_file, error_text + f"\n\n[Analyzer Hint]: {analysis.get('root_cause')}", plan, fix_history=fix_history)
-                            except AbortFixLoopException as e:
-                                print(f"\n  🛑 Agent explicitly aborted fix loop: {e}")
-                                self.last_run_success = False
-                                self.last_error = f"Agent explicitly aborted fix loop: {e}"
-                                return plan
+
+                    main_file = self._identify_error_file(error_text, plan)
+
+                    if main_file:
+                        try:
+                            fixed_code = self.fix_error(task, main_file, error_text, plan, fix_history=fix_history)
+                        except AbortFixLoopException as e:
+                            print(f"\n  🛑 Agent explicitly aborted fix loop: {e}")
+                            self.last_run_success = False
+                            self.last_error = f"Agent explicitly aborted fix loop: {e}"
+                            return plan
 
                         fix_history.append({"file": main_file.path, "error": error_text, "code": fixed_code})
 
@@ -1916,12 +1812,8 @@ class TaskExecutor:
                              if attempt == MAX_FIX_ATTEMPTS:
                                  self._ask_for_help(task, (run_result.stderr or run_result.stdout)[-2000:])
                     else:
-                        print(f"  ⚠️  Error Analyzer: Non-File Bug or Unknown. Hint: {analysis.get('suggested_action', 'None')}")
-                        print(f"  🔄 Feeding hint back to ReAct loop instead of local blind fix...")
-                        self.last_run_success = False
-                        self.last_error = f"Command failed: {command}. Analyzer concluded: {analysis.get('root_cause')}. Suggested action: {analysis.get('suggested_action')}"
-                        return plan # Escape back to ReAct with the structural hint
-
+                        print(f"  ⚠️  Could not identify file to fix. Retrying...")
+                        break
 
                     # Recompile if needed before re-running
                     if plan.compile_command:
@@ -2004,24 +1896,16 @@ class TaskExecutor:
 
             print(f"  🩹 Auto-Healing: Analyzing error to fix code...")
             
-            # Phase 91: Dynamic LLM Error Analyzer
-            self.readable_logger.set_phase("ANALYZING ERROR")
-            analysis = self._analyze_error_with_llm(failed_output, plan)
-            
-            main_file = None
-            if analysis and analysis.get("is_code_bug") and analysis.get("primary_file"):
-                target_path = analysis["primary_file"]
-                for f in plan.files:
-                     if f.path.endswith(target_path) or target_path.endswith(f.path):
-                         main_file = f
-                         break
+            # 2. Identify likely culprit
+            main_file = self._identify_error_file(failed_output, plan)
             
             if not main_file:
-                 # Fallback: if we can't find a file in the stack trace, pick the file that is being tested
+                 # Fallback: if we can't find a file in the stack trace, 
+                 # pick the file that is being tested (if possible) or the first modified file.
                  candidates = [f for f in plan.files if f.action != "delete"]
                  if candidates:
                      main_file = candidates[0]
-                     print(f"  ⚠️  Analyzer could not pinpoint exact file. Guessing: {main_file.path}")
+                     print(f"  ⚠️  Could not pinpoint file from error. Guessing: {main_file.path}")
 
             if main_file:
                  try:

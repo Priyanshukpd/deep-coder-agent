@@ -44,3 +44,9 @@ plan_test.txt
 .venv
 venv/
 ENV/
+
+# Reference CLI repos (local research only — do not commit)
+gemini-cli/
+claude-code-cli/
+codexcli/
+blackboxcli/

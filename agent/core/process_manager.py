@@ -159,8 +159,8 @@ class ProcessManager:
             with self._lock:
                 for p in self._processes:
                     if p.is_background and p.process.poll() is not None:
-                        # Capture tail of output (up to 200 lines for full Python tracebacks)
-                        output_tail = "".join(p.output_lines[-200:])
+                        # Capture tail of output
+                        output_tail = "".join(p.output_lines[-20:])
                         if not output_tail and p.process.stdout:
                             # Try to read whatever is left
                             try:

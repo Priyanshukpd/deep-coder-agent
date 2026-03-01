@@ -64,34 +64,19 @@ CLASSIFY_INTENT_TOOL = {
     }
 }
 
-SYSTEM_PROMPT = """You are the Intent Classifier for a ReAct-based dev agent.
+SYSTEM_PROMPT = """You are the Intent Classifier for a ReAct-based dev agent. 
 Classify the user's request into a directional goal by calling classify_intent.
 
 Goals:
 - fix: Fixing bugs, errors, or broken behavior.
-- develop: Any active code development including new features, refactors,
-  optimizations, architectural shifts, OR any task where the agent must
-  actively DO something (run a server, install packages, set up a database,
-  write files, etc.).
-- explain: Code analysis and questions ONLY when the task is purely read-only
-  with no side effects (e.g., "explain this function", "what does X do?").
+- develop: Any active code development including new features, refactors, optimizations, or architectural shifts.
+- explain: Code analysis and questions (read-only).
 - generate: Creating a new project or file from nothing.
 - meta: Meta-commands for the agent (e.g., stop, wait, redo).
 
-CRITICAL DISAMBIGUATION RULE:
-If the task contains ANY of these action verbs: run, start, make, install,
-deploy, launch, serve, setup, build, execute, create, fix, update, write —
-classify it as 'develop' or 'fix', NEVER as 'explain', even if the task also
-contains analysis words like 'analyze', 'understand', 'check', or 'verify'.
-'explain' is ONLY for purely passive, read-only, zero-side-effect queries.
+THE AMBITION DIRECTIVE: For tasks that have no prior context, feel free to be ambitious and demonstrate creativity with your implementation. Use judicious initiative to fix vague prompts like "improve the UI" without halting repeatedly for user approval. Set `clarification_needed=false` unless the request is truly impossible to guess.
 
-THE AMBITION DIRECTIVE: For tasks that have no prior context, feel free to be
-ambitious and demonstrate creativity. Use judicious initiative to fix vague
-prompts like "improve the UI" without halting repeatedly for user approval.
-Set `clarification_needed=false` unless the request is truly impossible to guess.
-
-The agent will autonomously determine the fine-grained steps (ReAct loop) once
-the goal is set."""
+The agent will autonomously determine the fine-grained steps (ReAct loop) once the goal is set."""
 
 
 # -- Intent Enum Mapping --
@@ -135,10 +120,6 @@ class IntentClassifier:
             try:
                 return self._classify_with_llm(user_input, repo_context)
             except Exception as e:
-                error_str = str(e).lower()
-                if "401" in error_str or "invalid_api_key" in error_str or "unauthorized" in error_str:
-                    logger.warning(f"Authentication error during classification. Bubbling up for Provider Cascade...")
-                    raise
                 logger.warning(f"LLM classification failed, falling back to heuristics: {e}")
 
         return self._classify_with_heuristics(user_input, repo_context)
@@ -214,15 +195,7 @@ class IntentClassifier:
             )
 
         # High Confidence DEVELOP (Consolidated)
-        # Phase 95: Expanded to include action verbs — 'run', 'make', 'start',
-        # 'install', 'deploy', 'launch' etc. must never classify as EXPLAIN.
-        if any(w in lower_input for w in [
-            "add", "feature", "refactor", "optimize", "ui", "framework",
-            "migrate", "implement", "update", "build", "change",
-            # Action verbs — these always mean DO something, not just read
-            "run", "make", "start", "install", "deploy", "launch", "serve",
-            "setup", "set up", "execute", "apply", "enable", "configure",
-        ]):
+        if any(w in lower_input for w in ["add", "feature", "refactor", "optimize", "ui", "framework", "migrate", "implement", "update", "build", "change"]):
             return IntentResult(
                 intent=TaskIntent.DEVELOP,
                 confidence=0.90,

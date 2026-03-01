@@ -162,10 +162,6 @@ class ReActOrchestrator:
             self._print_failure_summary(task, "User aborted via KeyboardInterrupt")
             raise
         except Exception as e:
-            error_str = str(e).lower()
-            if "401" in error_str or "invalid_api_key" in error_str or "unauthorized" in error_str:
-                logger.warning(f"Authentication error in orchestrate. Bubbling up...")
-                raise
             logger.error(f"Agent crashed with exception: {e}", exc_info=True)
             self._print_failure_summary(task, f"Agent crashed: {e}")
             return False
@@ -253,10 +249,6 @@ class ReActOrchestrator:
             logger.error(f"Function name mismatch or None. Result: {result}")
             return None
         except Exception as e:
-            error_str = str(e).lower()
-            if "401" in error_str or "invalid_api_key" in error_str or "unauthorized" in error_str:
-                logger.warning(f"Authentication error in decide_next_step. Bubbling up...")
-                raise
             logger.error(f"Error in decide_next_step: {e}")
             return None
 
@@ -310,49 +302,20 @@ class ReActOrchestrator:
                 path = action_input.get("path")
                 content = action_input.get("content", "")
                 description = action_input.get("description", "ReAct loop edit")
-
+                
                 # Use TaskExecutor's write/patch logic
                 from agent.core.task_executor import FileAction
                 fa = FileAction(path=path, action="modify", description=description)
-
+                
                 # Check if it's a diff or full code
                 if content.startswith("@@") or "@@ -" in content:
                     success = self._executor._apply_surgical_patch(fa, content)
                     if success:
-                        return f"Successfully patched {path}"
+                         return f"Successfully patched {path}"
                     return f"Failed to apply patch to {path}. Try sending full content."
                 else:
-                    try:
-                        self._executor._write_file(fa, content)
-                        return f"Successfully wrote full content to {path}"
-                    except (PermissionError, OSError) as e:
-                        # Phase 95 Fix 2: Auto-retry via shell command before giving up.
-                        # _write_file already has a shell fallback, but if even that
-                        # fails (e.g. a truly locked file), try run_command as last resort.
-                        import shlex
-                        import tempfile
-                        full_target = os.path.join(self._executor._repo_path, path)
-                        with tempfile.NamedTemporaryFile(
-                            mode='w', suffix='.agent_tmp', delete=False
-                        ) as tmp:
-                            tmp.write(content)
-                            tmp_path = tmp.name
-                        # cp first; only rm the temp on success
-                        shell_cmd = (
-                            f"cp {shlex.quote(tmp_path)} {shlex.quote(full_target)}"
-                            f" && rm -f {shlex.quote(tmp_path)}"
-                            f" || {{ rm -f {shlex.quote(tmp_path)}; exit 1; }}"
-                        )
-                        res = self._executor.run_code(shell_cmd)
-                        if res.return_code == 0:
-                            fa.content = content
-                            return f"Wrote {path} via shell command fallback (direct write failed: {e})"
-                        return (
-                            f"Failed to write {path}: {e}. "
-                            f"Shell fallback also failed: {res.stderr[:200]}. "
-                            f"Try using run_command with a heredoc: "
-                            f"cat << 'EOF' > {path} ... EOF"
-                        )
+                    self._executor._write_file(fa, content)
+                    return f"Successfully wrote full content to {path}"
 
             elif action == "run_command":
                 cmd = action_input.get("command")
@@ -418,12 +381,6 @@ class ReActOrchestrator:
         custom_instructions = ""
         if hasattr(self, "_custom_agent") and self._custom_agent:
             custom_instructions = f"\n### Custom Subagent Instructions ({self._custom_agent.name}):\n{self._custom_agent.system_prompt}\n"
-            
-        from agent.planning.memory import ArchitectureMemory
-        arch_mem = ArchitectureMemory(self._executor._repo_path, self._executor._provider)
-        memory_context = arch_mem.read_context()
-        if memory_context:
-            custom_instructions += f"\n### [LONG-TERM MEMORY]\n{memory_context}\n"
         
         return f"""You are a ReAct-based autonomous software engineer. 
 Your goal is to complete the user's task by reasoning and taking steps.
@@ -446,14 +403,10 @@ Guidelines:
 1. Always state your Thought before choosing an Action.
 2. Use observations from previous steps to inform your next decision.
 3. If a command fails, analyze the error. If it's a 'Permission Denied' or 'Missing File', check your environment (id, hostname) and look for config files (.ini, .cfg, .toml).
-4. **Write failures**: If `write_file` fails with a permission error, immediately try writing the same content using `run_command` with shell redirection instead of giving up. For example: `run_command("printf '%s' '...content...' > path/to/file")` or for multi-line: use a heredoc via `run_command("cat << 'AGENT_EOF' > filename\n...content...\nAGENT_EOF")`.
-5. If you repeat an action twice with the same result, STOP and try a DIFFERENT approach (e.g., switch from write_file to run_command, or use a different directory).
+4. If you repeat an action twice with the same result, STOP. Try a different approach or verify the file exists first.
 7. Strategic Debugging: If tests fail because of missing data or uninitialized state, verify your data hydration strategy (e.g., eager vs lazy loading) and ensure all dependencies are resolved before use.
 8. Architectural Resilience: If you encounter circular dependency or "partially initialized" errors, analyze the import/dependency graph. Move shared definitions to a "Base" or "Common" module to break the loop.
 9. Environment Knowledge: If a tool fails with unexpected errors, use discovery tools (`ls`, `run_command('id')`, `search_code`) to map the environment before making assumptions.
-10. Python Paths: If you get a 'ModuleNotFoundError' when running a local script, remember to inject the current directory into the python path (e.g., `PYTHONPATH=. python script.py`).
-11. Port Management: If a server fails with 'Address already in use' or 'Errno 48', you must use `lsof -i :PORT` to find the blocking PID and `kill -9 PID` to terminate it before retrying.
-12. Background Execution (CRITICAL): If you need to start a web server, database, or ANY long-running process for live testing, you MUST run it in the background (e.g., `nohup command &` or `command &`) to free your terminal. Then, use `curl`, `nc`, or `ping` to verify it is running successfully. Do NOT run servers synchronously or you will block your own event loop.
 
 Response Format:
 You must call the 'decide_step' function with your thought, action, and action_input.
@@ -480,7 +433,7 @@ REACT_STEP_TOOL = {
                 },
                 "action_input": {
                     "type": "object",
-                    "description": "Parameters for the action. For run_command, you may include 'is_background' (boolean) to explicitly declare if the command should be run in the background (e.g. for servers, watchers, daemons). Set is_background=true for long-running processes, false for one-shot commands."
+                    "description": "Parameters for the action."
                 }
             },
             "required": ["thought", "action", "action_input"]
