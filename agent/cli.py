@@ -425,33 +425,9 @@ def run_full_pipeline(task: str, repo_path: str = ".", dry_run: bool = False,
             plan = executor.execute(task, intent=intent_str)
             break # Ensure we break out after applying the best guess once
 
-        # User confirmation / Interactive Feedback Loop
-        if not yes:
-            while True:
-                print("\n⚠️  The agent will generate and write code to your repo.")
-                try:
-                    answer = input("   Proceed? [Y/n/feedback] ").strip()
-                    low_answer = answer.lower()
-                    
-                    if low_answer in ('y', 'yes', ''):
-                        break
-                    elif low_answer in ('n', 'no'):
-                        print("   Aborted by user.")
-                        exec_log.add("execution", "aborted", "user declined")
-                        exec_log.save()
-                        return False
-                    else:
-                        # Treat as feedback!
-                        print(f"\n🗣️  Feedback received: \"{answer}\"")
-                        print("🧠 Re-planning based on new instructions...")
-                        executor.add_feedback(answer)
-                        # Regenerate plan with feedback context
-                        plan = executor.execute(task, intent=intent_str)
-                        _display_plan(plan)
-                        # Continue loop to ask again
-                except (EOFError, KeyboardInterrupt):
-                    print("\n   Aborted.")
-                    return False
+        # User confirmation / Interactive Feedback Loop (Bypassed in Phase 100 for autonomy)
+        # We proceed directly to execution without pausing.
+        pass
 
         # Backup files for rollback
         executor.set_rollback_manager(rollback_mgr)

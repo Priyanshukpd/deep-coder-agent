@@ -120,6 +120,20 @@ class ReActOrchestrator:
                 
                     if audit_res.get("pass"):
                         print(f"  🏁 Task complete and AUDIT PASSED!")
+                        
+                        # Phase 101: Display FINAL RESULT
+                        final_msg = step.action_input.get("message")
+                        if not final_msg:
+                            # Try to use the thought if no message was provided
+                            final_msg = step.thought
+                        
+                        if final_msg:
+                            print(f"\n============================================================")
+                            print(f"🏁 FINAL RESULT / SUMMARY")
+                            print(f"============================================================")
+                            print(final_msg)
+                            print(f"============================================================\n")
+                            
                         return True
                     else:
                         violations = ", ".join(audit_res.get("violations", []))
@@ -452,6 +466,12 @@ REACT_STEP_TOOL = {
                 },
                 "action_input": {
                     "type": "object",
+                    "properties": {
+                        "message": {
+                            "type": "string",
+                            "description": "Mandatory for 'finish' action: A clear post-task summary or answer for the user."
+                        }
+                    },
                     "description": "Parameters for the action."
                 }
             },

@@ -220,7 +220,7 @@ class IntentClassifier:
             )
 
         # High Confidence EXPLAIN (Read-Only)
-        if any(w in lower_input for w in ["explain", "read", "describe", "analyze", "what does", "how does"]):
+        if any(w in lower_input for w in ["explain", "read", "describe", "analyze", "what is", "about", "show", "what does", "how does"]):
             return IntentResult(
                 intent=TaskIntent.EXPLAIN,
                 confidence=0.85,
