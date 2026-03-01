@@ -219,5 +219,8 @@ class RepoDiscovery:
             if path.suffix in IGNORE_EXTENSIONS:
                 continue
             # Only files
-            if path.is_file():
-                yield path
+            try:
+                if path.is_file():
+                    yield path
+            except PermissionError:
+                continue

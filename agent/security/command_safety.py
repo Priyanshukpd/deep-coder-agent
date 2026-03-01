@@ -97,14 +97,21 @@ class CommandClassification:
 
 from agent.security.rule_engine import rule_engine, RuleTier
 from agent.security.governance import get_governance_manager
+from agent.security.command_policy_config import CommandPolicyEnforcer
 
 def classify_command(command: str, repo_path: str = ".") -> CommandClassification:
     """
-    Classify a shell command into a safety tier using RuleEngine.
+    Classify a shell command into a safety tier.
+
+    Phase 94 — Three-pass evaluation (Blackbox CLI-inspired):
+    Pass 1: RuleEngine — catastrophic / irreversible patterns only (BLOCKED).
+    Pass 2: CommandPolicyEnforcer — reads .agent/config.json for project-level
+            allowlists and blocklists. Permissive if no config file found.
+    Pass 3: Session governance override — previously approved commands stay allowed.
     """
-    res = rule_engine.check(command)
+    res = rule_engine.check(command, repo_path)
     governance = get_governance_manager(repo_path)
-    
+
     # Map RuleTier to CommandTier
     mapping = {
         RuleTier.SAFE: CommandTier.SAFE,
@@ -113,12 +120,42 @@ def classify_command(command: str, repo_path: str = ".") -> CommandClassificatio
         RuleTier.GIT_REWRITE: CommandTier.GIT_REWRITE,
         RuleTier.BLOCKED: CommandTier.UNKNOWN,
         RuleTier.EXFILTRATION: CommandTier.UNKNOWN,
+        RuleTier.UNKNOWN: CommandTier.SAFE,  # Phase 94: UNKNOWN → SAFE (not BLOCK)
     }
-    
-    tier = mapping.get(res.tier, CommandTier.UNKNOWN)
-    policy = CommandPolicy.ALLOW if res.tier == RuleTier.SAFE else CommandPolicy.BLOCK if res.is_blocked else TIER_POLICY.get(tier, CommandPolicy.REQUIRE_APPROVAL)
 
-    # Phase 68: Session-Aware Governance Override
+    tier = mapping.get(res.tier, CommandTier.SAFE)
+
+    # Pass 1: If RuleEngine hard-blocked it (catastrophic), that's final
+    if res.is_blocked:
+        return CommandClassification(
+            command=command,
+            tier=CommandTier.UNKNOWN,
+            policy=CommandPolicy.BLOCK,
+            matched_pattern=res.matched_pattern,
+            is_explicitly_blocked=True,
+            reasoning=res.reason,
+        )
+
+    # Pass 2: Apply project-specific policy from .agent/config.json
+    policy_enforcer = CommandPolicyEnforcer(repo_path)
+    decision, policy_reason = policy_enforcer.evaluate(command)
+
+    if decision == "block":
+        return CommandClassification(
+            command=command,
+            tier=tier,
+            policy=CommandPolicy.BLOCK,
+            matched_pattern=None,
+            is_explicitly_blocked=False,
+            reasoning=policy_reason,
+        )
+    elif decision == "require_approval":
+        policy = CommandPolicy.REQUIRE_APPROVAL
+    else:
+        # 'allow' from project config — still apply global tier policy for rate-limiting
+        policy = TIER_POLICY.get(tier, CommandPolicy.ALLOW)
+
+    # Pass 3: Session-Aware Governance Override
     if policy == CommandPolicy.REQUIRE_APPROVAL and governance.is_approved(command):
         policy = CommandPolicy.ALLOW
 
@@ -127,13 +164,13 @@ def classify_command(command: str, repo_path: str = ".") -> CommandClassificatio
         tier=tier,
         policy=policy,
         matched_pattern=res.matched_pattern,
-        is_explicitly_blocked=res.is_blocked,
-        reasoning=res.reason,
+        is_explicitly_blocked=False,
+        reasoning=f"{res.reason} | {policy_reason}",
     )
 
 
-def is_command_allowed(command: str) -> tuple[bool, CommandClassification]:
+def is_command_allowed(command: str, repo_path: str = ".") -> tuple[bool, CommandClassification]:
     """ Quick check. """
-    result = classify_command(command)
+    result = classify_command(command, repo_path)
     auto_allowed = result.policy in {CommandPolicy.ALLOW, CommandPolicy.RATE_LIMIT}
     return auto_allowed, result

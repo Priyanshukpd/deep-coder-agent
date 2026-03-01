@@ -118,6 +118,10 @@ Focus on:
     EXPLORER_PROMPT = """You are a Context Explorer. 
 Your MISSION: Locate all relevant files and symbols for the task.
 Focus on: Mapping dependencies and reading enough code to understand the graph.
+
+### CRITICAL RULES:
+1. **Never Read Blindly**: You MUST NOT use `read_file` on a file path unless you have directly confirmed its exact existence and path in the current context using `ls` or `search_code` first. Guessing file names (like `config.json` or `task.md`) wastes resources.
+
 ### OUT OF SCOPE:
 - Do NOT suggest fixes. 
 - Do NOT write code.
@@ -144,6 +148,24 @@ Focus on: Running tests, linting, and validating the fix.
 - Do NOT implement new features.
 """
 
+    ERROR_ANALYZER_PROMPT = """You are a Principal Error Analyzer.
+Your MISSION: Analyze a crashed command's output and determine the root cause, identifying whether it is a code bug, a missing dependency, or an environment/framework issue.
+Focus on: Logical deduction.
+
+You MUST follow this exact JSON schema:
+```json
+{
+  "root_cause": "A concise, human-readable explanation of why it failed.",
+  "is_code_bug": true, // True if a specific file needs editing; False for pip installs, missing DBs, wrong ports, etc.
+  "primary_file": "path/to/broken_file.py", // ONLY include if is_code_bug is true. Leave blank if environment issue.
+  "suggested_action": "High-level strategic advice for the agent (e.g., 'Run pip install X', 'Wait for DB to start', 'Edit auth.py to remove circular import')"
+}
+```
+
+### OUT OF SCOPE:
+- Do NOT write or output code fixes directly.
+"""
+
     def get_system_prompt(self, mode: str, language: str = "Python", file_list: list[str] = None) -> str:
         """Returns the system prompt for the given mode, optionally hydrated with skills."""
         mode = mode.upper()
@@ -168,6 +190,8 @@ Focus on: Running tests, linting, and validating the fix.
             base_prompt = self.IMPLEMENTER_PROMPT
         elif mode == "VERIFIER":
             base_prompt = self.VERIFIER_PROMPT
+        elif mode == "ERROR_ANALYZER":
+            base_prompt = self.ERROR_ANALYZER_PROMPT
         else:
             base_prompt = f"You are a helpful AI assistant expert in {language}."
 

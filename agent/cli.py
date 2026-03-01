@@ -249,7 +249,35 @@ def run_classify(task: str, repo_path: str = None):
         repo_context = f"Project type: {repo_map.stack.summary}. Files: {repo_map.file_count}."
 
     classifier = IntentClassifier(provider=provider)
-    result = classifier.classify(task, repo_context=repo_context)
+    try:
+        result = classifier.classify(task, repo_context=repo_context)
+    except Exception as e:
+        error_str = str(e).lower()
+        if "401" in error_str or "invalid_api_key" in error_str or "invalid" in error_str or "unauthorized" in error_str:
+            print(f"\n⚠️  Primary provider authentication failed during intent classification.")
+            print(f"🔄 Provider Cascade: Falling back to local 'ollama' provider...")
+            
+            # Switch to fallback provider
+            object.__setattr__(config, "provider", "ollama")
+            from agent.config import LLMConfig
+            object.__setattr__(config, "llm", LLMConfig(model="qwen3-coder:480b-cloud"))
+            from agent.core.provider_factory import create_provider
+            provider = create_provider(config)
+            
+            # Retry classification with new provider
+            classifier = IntentClassifier(provider=provider)
+            try:
+                result = classifier.classify(task, repo_context=repo_context)
+                mode = "LLM (Ollama Fallback)"
+            except Exception as fallback_e:
+                print(f"⚠️  Fallback classification also failed: {fallback_e}")
+                # Ultimate fallback to heuristics if Ollama fails
+                result = classifier._classify_with_heuristics(task, repo_context)
+                mode = "Heuristic (Fallback Failed)"
+        else:
+            print(f"⚠️  Unexpected classification error: {e}")
+            result = classifier._classify_with_heuristics(task, repo_context)
+            mode = "Heuristic (Error)"
 
     print(f"\n🧠 Intent Classification ({mode})\n")
     print(f"  Task:       {task}")
@@ -369,11 +397,7 @@ def run_full_pipeline(task: str, repo_path: str = ".", dry_run: bool = False,
     exec_log.add("risk_budget", "ok", f"exhausted={budget.is_exhausted}")
 
     # ── Step 6: Execution ──
-    if not config.has_api_key:
-        print("\n⚠️  No API key — skipping code generation")
-        exec_log.add("execution", "skipped", "no API key")
-        exec_log.save()
-        return True
+
 
     print("─── Step 6: Task Execution ───")
     from agent.core.provider_factory import create_provider
@@ -419,7 +443,26 @@ def run_full_pipeline(task: str, repo_path: str = ".", dry_run: bool = False,
         llm_calls = provider.call_count
         exec_log.add("execution", "dry_run", f"{len(plan.files)} files planned")
     else:
-        plan = executor.execute(task, intent=intent_str)
+        try:
+            plan = executor.execute(task, intent=intent_str)
+        except Exception as e:
+            error_str = str(e).lower()
+            if "401" in error_str or "invalid_api_key" in error_str or "invalid" in error_str or "unauthorized" in error_str:
+                print(f"\n⚠️  Primary provider failed with authentication error: {e}")
+                print(f"🔄 Provider Cascade: Falling back to local 'ollama' provider...")
+                
+                # Re-initialize with fallback provider
+                fallback_provider_name = "ollama"
+                fallback_model_name = "qwen3-coder:480b-cloud"
+                object.__setattr__(config, "provider", fallback_provider_name)
+                from agent.config import LLMConfig
+                object.__setattr__(config, "llm", LLMConfig(model=fallback_model_name))
+                    
+                provider = create_provider(config)
+                executor = TaskExecutor(provider, repo_path)
+                plan = executor.execute(task, intent=intent_str)
+            else:
+                raise
         
         # Phase 59: Handle ambiguity in interactive loop
         while plan.is_ambiguous:
@@ -476,8 +519,6 @@ def run_full_pipeline(task: str, repo_path: str = ".", dry_run: bool = False,
 
         # Backup files for rollback
         executor.set_rollback_manager(rollback_mgr)
-
-        # plan = executor.execute(task, intent=intent_str) # This line was moved up
         files_written = len(plan.files)
         llm_calls = provider.call_count
 
